@@ -556,7 +556,7 @@ class Config:
 
     @property
     def captcha_provider_fallback_order(self) -> str:
-        return str(self._config.get("captcha", {}).get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha") or "")
+        return str(self._config.get("captcha", {}).get("captcha_provider_fallback_order", "capsolver,yescaptcha,capmonster,ezcaptcha") or "")
 
     def set_captcha_provider_fallback_order(self, order: str):
         if "captcha" not in self._config:

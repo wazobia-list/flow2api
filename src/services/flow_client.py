@@ -48,6 +48,10 @@ class FlowClient:
             "captcha_api_provider_state",
             default=None
         )
+        self._last_api_captcha_error_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+            "last_api_captcha_error_ctx",
+            default=None,
+        )
 
         # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
         # These will be applied as defaults (won't override caller-provided headers).
@@ -1002,7 +1006,7 @@ class FlowClient:
             attempt_trace["recaptcha_ms"] = int((time.time() - recaptcha_started_at) * 1000)
             attempt_trace["recaptcha_ok"] = bool(recaptcha_token)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 attempt_trace["success"] = False
                 attempt_trace["error"] = str(last_error)
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
@@ -1128,7 +1132,7 @@ class FlowClient:
                 token_id=token_id
             )
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 should_retry = await self._handle_missing_recaptcha_token(
                     retry_attempt=retry_attempt,
                     max_retries=max_retries,
@@ -1262,7 +1266,7 @@ class FlowClient:
                 if launch_gate_acquired:
                     await self._release_video_launch_gate(token_id)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 should_retry = await self._handle_missing_recaptcha_token(
                     retry_attempt=retry_attempt,
                     max_retries=max_retries,
@@ -1386,7 +1390,7 @@ class FlowClient:
                 if launch_gate_acquired:
                     await self._release_video_launch_gate(token_id)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 should_retry = await self._handle_missing_recaptcha_token(
                     retry_attempt=retry_attempt,
                     max_retries=max_retries,
@@ -1519,7 +1523,7 @@ class FlowClient:
                 if launch_gate_acquired:
                     await self._release_video_launch_gate(token_id)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 should_retry = await self._handle_missing_recaptcha_token(
                     retry_attempt=retry_attempt,
                     max_retries=max_retries,
@@ -1650,7 +1654,7 @@ class FlowClient:
                 if launch_gate_acquired:
                     await self._release_video_launch_gate(token_id)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 should_retry = await self._handle_missing_recaptcha_token(
                     retry_attempt=retry_attempt,
                     max_retries=max_retries,
@@ -1777,7 +1781,7 @@ class FlowClient:
                 if launch_gate_acquired:
                     await self._release_video_launch_gate(token_id)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = self._build_recaptcha_failure_exception()
                 should_retry = await self._handle_missing_recaptcha_token(
                     retry_attempt=retry_attempt,
                     max_retries=max_retries,
@@ -1971,7 +1975,7 @@ class FlowClient:
         project_id: str,
         log_prefix: str,
     ) -> bool:
-        token_error = Exception("Failed to obtain reCAPTCHA token")
+        token_error = self._build_recaptcha_failure_exception()
         return await self._handle_retryable_generation_error(
             error=token_error,
             retry_attempt=retry_attempt,
@@ -1981,8 +1985,33 @@ class FlowClient:
             log_prefix=log_prefix,
         )
 
+    def _clear_last_api_captcha_error(self) -> None:
+        self._last_api_captcha_error_ctx.set(None)
+
+    def _set_last_api_captcha_error(self, error: Exception, provider: Optional[str] = None) -> None:
+        self._last_api_captcha_error_ctx.set({
+            "message": str(error),
+            "provider": provider,
+            "type": type(error).__name__,
+        })
+
+    def _get_last_api_captcha_error(self) -> Optional[Exception]:
+        payload = self._last_api_captcha_error_ctx.get()
+        if not payload:
+            return None
+        return Exception(payload.get("message") or "Failed to obtain reCAPTCHA token")
+
+    def _build_recaptcha_failure_exception(self) -> Exception:
+        return self._get_last_api_captcha_error() or Exception("Failed to obtain reCAPTCHA token")
+
     def _classify_flow_error(self, error_str: str) -> str:
         value = (error_str or "").lower()
+        if "provider_unsupported_enterprise" in value:
+            return "provider_unsupported_enterprise"
+        if "provider_task_creation_failed" in value:
+            return "provider_task_creation_failed"
+        if "provider_polling_timeout" in value:
+            return "provider_polling_timeout"
         if "public_error_unusual_activity" in value:
             return "upstream_public_error_unusual_activity"
         if "recaptcha evaluation failed" in value:
@@ -1992,7 +2021,10 @@ class FlowClient:
         return "other"
 
     def _get_api_provider_order(self, primary_method: str) -> List[str]:
-        return parse_provider_fallback_order(config.captcha_provider_fallback_order, primary=primary_method)
+        raw_order = (config.captcha_provider_fallback_order or "").strip()
+        if raw_order:
+            return parse_provider_fallback_order(raw_order, primary=primary_method, prepend_primary=False)
+        return parse_provider_fallback_order("", primary=primary_method, prepend_primary=True)
 
     def _get_current_api_provider(self, primary_method: str, project_id: str, action: str) -> str:
         order = self._get_api_provider_order(primary_method)
@@ -2373,6 +2405,7 @@ class FlowClient:
             - 其他模式: browser_id 为 None
         """
         captcha_method = config.captcha_method
+        self._clear_last_api_captcha_error()
         debug_logger.log_info(f"[reCAPTCHA] 开始获取 token: method={captcha_method}, project_id={project_id}, action={action}")
 
         # 内置浏览器打码 (nodriver)
@@ -2457,8 +2490,12 @@ class FlowClient:
         elif captcha_method in SUPPORTED_API_CAPTCHA_METHODS:
             self._set_request_fingerprint(None)
             provider = self._get_current_api_provider(captcha_method, project_id, action)
-            token = await self._get_api_captcha_token(provider, project_id, action)
-            return token, None
+            try:
+                token = await self._get_api_captcha_token(provider, project_id, action)
+                return token, None
+            except CaptchaProviderError as e:
+                self._set_last_api_captcha_error(e, provider=provider)
+                return None, None
         else:
             debug_logger.log_info(f"[reCAPTCHA] 未知的打码方式: {captcha_method}")
             self._set_request_fingerprint(None)
@@ -2487,12 +2524,14 @@ class FlowClient:
             )
             return token
         except CaptchaProviderError as e:
-            debug_logger.log_error(f"[reCAPTCHA {method}] {e}")
+            debug_logger.log_error(f"[reCAPTCHA {method}] code={getattr(e, 'code', 'provider_error')} detail={e}")
             if self._advance_api_provider(config.captcha_method, project_id, action):
                 next_provider = self._get_current_api_provider(config.captcha_method, project_id, action)
                 debug_logger.log_warning(f"[reCAPTCHA] 当前 provider 获取失败，尝试 fallback provider={next_provider}")
                 return await self._get_api_captcha_token(next_provider, project_id, action)
-            return None
+            self._set_last_api_captcha_error(e, provider=method)
+            raise
         except Exception as e:
+            self._set_last_api_captcha_error(e, provider=method)
             debug_logger.log_error(f"[reCAPTCHA {method}] unexpected_error: {str(e)}")
             return None

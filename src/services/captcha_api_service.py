@@ -15,6 +15,18 @@ ENTERPRISE_MODES = {"auto", "force_on", "force_off"}
 class CaptchaProviderError(RuntimeError):
     """Structured provider failure."""
 
+    def __init__(
+        self,
+        message: str,
+        code: str = "provider_error",
+        provider: Optional[str] = None,
+        detail: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.provider = provider
+        self.detail = detail or message
+
 
 @dataclass
 class CaptchaTaskPlan:
@@ -27,7 +39,11 @@ class CaptchaTaskPlan:
     unsupported_reason: Optional[str] = None
 
 
-def parse_provider_fallback_order(raw_order: str, primary: Optional[str] = None) -> List[str]:
+def parse_provider_fallback_order(
+    raw_order: str,
+    primary: Optional[str] = None,
+    prepend_primary: bool = False,
+) -> List[str]:
     providers: List[str] = []
     seen = set()
     for item in (raw_order or "").split(","):
@@ -36,7 +52,7 @@ def parse_provider_fallback_order(raw_order: str, primary: Optional[str] = None)
             providers.append(normalized)
             seen.add(normalized)
 
-    if primary and primary in SUPPORTED_API_CAPTCHA_METHODS:
+    if primary and primary in SUPPORTED_API_CAPTCHA_METHODS and prepend_primary:
         if primary in providers:
             providers.remove(primary)
         providers.insert(0, primary)
@@ -81,11 +97,19 @@ def build_captcha_task_plan(
 ) -> CaptchaTaskPlan:
     provider = (provider or "").strip().lower()
     if provider not in SUPPORTED_API_CAPTCHA_METHODS:
-        raise CaptchaProviderError(f"不支持的打码方式: {provider}")
+        raise CaptchaProviderError(
+            f"不支持的打码方式: {provider}",
+            code="provider_error",
+            provider=provider,
+        )
 
     client_key, base_url = _provider_credentials(provider)
     if not client_key:
-        raise CaptchaProviderError(f"{provider} API Key 未配置")
+        raise CaptchaProviderError(
+            f"{provider} API Key 未配置",
+            code="provider_key_missing",
+            provider=provider,
+        )
 
     enterprise_mode = (config.captcha_enterprise_mode or "auto").strip().lower()
     enterprise_enabled = resolve_enterprise_enabled(enterprise_mode, enterprise_required)
@@ -99,8 +123,9 @@ def build_captcha_task_plan(
             task_type = yescaptcha_override
         elif enterprise_enabled:
             unsupported_reason = (
-                "yescaptcha 默认任务类型与 Flow 企业版 reCAPTCHA 不稳定，"
-                "请配置 yescaptcha_task_type_override 或启用 capsolver 作为回退"
+                "provider_unsupported_enterprise: yescaptcha enterprise mode is not reliable for this Flow target. "
+                "Configure capsolver_api_key and put capsolver first in captcha_provider_fallback_order, "
+                "or explicitly set yescaptcha_task_type_override, or force captcha_enterprise_mode=force_off for testing only."
             )
             task_type = "RecaptchaV3TaskProxylessM1"
         else:
@@ -147,7 +172,11 @@ async def solve_with_provider(
     )
 
     if plan.unsupported_reason:
-        raise CaptchaProviderError(plan.unsupported_reason)
+        raise CaptchaProviderError(
+            plan.unsupported_reason,
+            code="provider_unsupported_enterprise",
+            provider=plan.provider,
+        )
 
     task: Dict[str, Any] = {
         "websiteURL": website_url,
@@ -173,7 +202,12 @@ async def solve_with_provider(
 
         if not task_id:
             error_desc = create_json.get("errorDescription") or create_json.get("errorMessage") or "Unknown error"
-            raise CaptchaProviderError(f"provider_task_creation_failed: {plan.provider}: {error_desc}")
+            raise CaptchaProviderError(
+                f"provider_task_creation_failed: {plan.provider}: {error_desc}",
+                code="provider_task_creation_failed",
+                provider=plan.provider,
+                detail=error_desc,
+            )
 
         poll_errors = 0
         for index in range(40):
@@ -190,13 +224,26 @@ async def solve_with_provider(
                 if token:
                     debug_logger.log_info(f"[reCAPTCHA {plan.provider}] token_received=true token_len={len(token)}")
                     return token
-                raise CaptchaProviderError(f"missing_token: {plan.provider} ready 但未返回 token")
+                raise CaptchaProviderError(
+                    f"missing_token: {plan.provider} ready 但未返回 token",
+                    code="missing_token",
+                    provider=plan.provider,
+                )
 
             if poll_json.get("errorId") not in (None, 0):
                 poll_errors += 1
                 error_desc = poll_json.get("errorDescription") or poll_json.get("errorMessage") or str(poll_json)
-                raise CaptchaProviderError(f"provider_poll_failed: {plan.provider}: {error_desc}")
+                raise CaptchaProviderError(
+                    f"provider_poll_failed: {plan.provider}: {error_desc}",
+                    code="provider_poll_failed",
+                    provider=plan.provider,
+                    detail=error_desc,
+                )
 
             await asyncio.sleep(3)
 
-        raise CaptchaProviderError(f"provider_polling_timeout: {plan.provider} task={task_id}")
+        raise CaptchaProviderError(
+            f"provider_polling_timeout: {plan.provider} task={task_id}",
+            code="provider_polling_timeout",
+            provider=plan.provider,
+        )
