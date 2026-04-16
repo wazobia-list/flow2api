@@ -122,12 +122,7 @@ def build_captcha_task_plan(
         if yescaptcha_override:
             task_type = yescaptcha_override
         elif enterprise_enabled:
-            unsupported_reason = (
-                "provider_unsupported_enterprise: yescaptcha enterprise mode is not reliable for this Flow target. "
-                "Configure capsolver_api_key and put capsolver first in captcha_provider_fallback_order, "
-                "or explicitly set yescaptcha_task_type_override, or force captcha_enterprise_mode=force_off for testing only."
-            )
-            task_type = "RecaptchaV3TaskProxylessM1"
+            task_type = "RecaptchaV3EnterpriseTask"
         else:
             task_type = "RecaptchaV3TaskProxylessM1"
     elif provider == "capmonster":
@@ -148,8 +143,9 @@ def build_captcha_task_plan(
     )
 
     debug_logger.log_info(
-        f"[reCAPTCHA] provider={plan.provider}, task_type={plan.task_type}, enterprise_mode={plan.enterprise_mode}, "
-        f"enterprise={plan.enterprise_enabled}, action={action}, website={website_url}, unsupported={bool(plan.unsupported_reason)}"
+        f"[reCAPTCHA] provider={plan.provider}, task_type={plan.task_type}, "
+        f"enterprise_mode={plan.enterprise_mode}, enterprise={plan.enterprise_enabled}, "
+        f"action={action}, website={website_url}, override_used={bool(yescaptcha_override)}"
     )
     return plan
 
@@ -221,6 +217,10 @@ async def solve_with_provider(
             if status == "ready":
                 solution = poll_json.get("solution", {}) or {}
                 token = solution.get("gRecaptchaResponse") or solution.get("token")
+                solution_keys = list(solution.keys()) if isinstance(solution, dict) else []
+                debug_logger.log_info(
+                    f"[reCAPTCHA {plan.provider}] ready solution_keys={solution_keys} token_len={len(token) if token else 0}"
+                )
                 if token:
                     debug_logger.log_info(f"[reCAPTCHA {plan.provider}] token_received=true token_len={len(token)}")
                     return token

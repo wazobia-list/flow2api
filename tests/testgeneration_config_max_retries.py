@@ -3,7 +3,12 @@ import unittest
 
 from src.core.config import config
 from src.core.database import Database
-from src.services.captcha_api_service import CaptchaProviderError, parse_provider_fallback_order, resolve_enterprise_enabled
+from src.services.captcha_api_service import (
+    CaptchaProviderError,
+    build_captcha_task_plan,
+    parse_provider_fallback_order,
+    resolve_enterprise_enabled,
+)
 from src.services.flow_client import FlowClient
 
 
@@ -72,12 +77,12 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_provider_fallback_order_respects_configured_order(self):
         order = parse_provider_fallback_order(
-            "capsolver,yescaptcha",
+            "yescaptcha,capsolver",
             primary="yescaptcha",
             prepend_primary=False,
         )
-        self.assertEqual(order[0], "capsolver")
-        self.assertEqual(order[1], "yescaptcha")
+        self.assertEqual(order[0], "yescaptcha")
+        self.assertEqual(order[1], "capsolver")
 
     def test_parse_provider_fallback_order_legacy_primary_prepend(self):
         order = parse_provider_fallback_order("", primary="yescaptcha", prepend_primary=True)
@@ -89,6 +94,46 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(resolve_enterprise_enabled("auto", True))
         self.assertFalse(resolve_enterprise_enabled("auto", False))
 
+    def test_yescaptcha_enterprise_task_default(self):
+        original_mode = config.captcha_enterprise_mode
+        original_override = config.yescaptcha_task_type_override
+        original_key = config.yescaptcha_api_key
+        try:
+            config.set_captcha_enterprise_mode("auto")
+            config.set_yescaptcha_task_type_override("")
+            config.set_yescaptcha_api_key("dummy-key")
+            plan = build_captcha_task_plan(
+                provider="yescaptcha",
+                website_url="https://labs.google/fx/tools/flow/project/pid",
+                enterprise_required=True,
+                action="IMAGE_GENERATION",
+            )
+            self.assertEqual(plan.task_type, "RecaptchaV3EnterpriseTask")
+        finally:
+            config.set_captcha_enterprise_mode(original_mode)
+            config.set_yescaptcha_task_type_override(original_override)
+            config.set_yescaptcha_api_key(original_key)
+
+    def test_yescaptcha_enterprise_override_wins(self):
+        original_mode = config.captcha_enterprise_mode
+        original_override = config.yescaptcha_task_type_override
+        original_key = config.yescaptcha_api_key
+        try:
+            config.set_captcha_enterprise_mode("auto")
+            config.set_yescaptcha_task_type_override("RecaptchaV3EnterpriseTaskM1")
+            config.set_yescaptcha_api_key("dummy-key")
+            plan = build_captcha_task_plan(
+                provider="yescaptcha",
+                website_url="https://labs.google/fx/tools/flow/project/pid",
+                enterprise_required=True,
+                action="IMAGE_GENERATION",
+            )
+            self.assertEqual(plan.task_type, "RecaptchaV3EnterpriseTaskM1")
+        finally:
+            config.set_captcha_enterprise_mode(original_mode)
+            config.set_yescaptcha_task_type_override(original_override)
+            config.set_yescaptcha_api_key(original_key)
+
     async def test_reload_config_backwards_compatible_for_captcha_strategy(self):
         await self.db.update_captcha_config(captcha_method="yescaptcha")
         await self.db.reload_config_to_memory()
@@ -99,11 +144,11 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_on_evaluation_failed_advances_provider(self):
         client = FlowClient(proxy_manager=None, db=self.db)
         config.set_captcha_method("yescaptcha")
-        config.set_captcha_provider_fallback_order("capsolver,yescaptcha")
+        config.set_captcha_provider_fallback_order("yescaptcha,capsolver")
         config.set_captcha_api_retry_on_evaluation_failed(True)
 
         current = client._get_current_api_provider("yescaptcha", "project-1", "IMAGE_GENERATION")
-        self.assertEqual(current, "capsolver")
+        self.assertEqual(current, "yescaptcha")
 
         should_retry = await client._handle_retryable_generation_error(
             error=Exception("PUBLIC_ERROR_UNUSUAL_ACTIVITY: reCAPTCHA evaluation failed"),
@@ -115,7 +160,7 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(should_retry)
         current_after = client._get_current_api_provider("yescaptcha", "project-1", "IMAGE_GENERATION")
-        self.assertEqual(current_after, "yescaptcha")
+        self.assertEqual(current_after, "capsolver")
 
     async def test_final_provider_error_is_preserved(self):
         client = FlowClient(proxy_manager=None, db=self.db)

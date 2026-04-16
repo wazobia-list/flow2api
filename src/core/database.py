@@ -228,7 +228,7 @@ class Database:
             personal_idle_tab_ttl_seconds = 600
             captcha_enterprise_mode = "auto"
             captcha_api_retry_on_evaluation_failed = True
-            captcha_provider_fallback_order = "capsolver,yescaptcha,capmonster,ezcaptcha"
+            captcha_provider_fallback_order = "yescaptcha,capsolver,capmonster,ezcaptcha"
             yescaptcha_task_type_override = ""
 
             if config_dict:
@@ -245,7 +245,7 @@ class Database:
                 personal_idle_tab_ttl_seconds = captcha_config.get("personal_idle_tab_ttl_seconds", 600)
                 captcha_enterprise_mode = captcha_config.get("captcha_enterprise_mode", "auto")
                 captcha_api_retry_on_evaluation_failed = captcha_config.get("captcha_api_retry_on_evaluation_failed", True)
-                captcha_provider_fallback_order = captcha_config.get("captcha_provider_fallback_order", "capsolver,yescaptcha,capmonster,ezcaptcha")
+                captcha_provider_fallback_order = captcha_config.get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha")
                 yescaptcha_task_type_override = captcha_config.get("yescaptcha_task_type_override", "")
             try:
                 remote_browser_timeout = max(5, int(remote_browser_timeout))
@@ -383,7 +383,7 @@ class Database:
                         remote_browser_timeout INTEGER DEFAULT 60,
                         captcha_enterprise_mode TEXT DEFAULT 'auto',
                         captcha_api_retry_on_evaluation_failed BOOLEAN DEFAULT 1,
-                        captcha_provider_fallback_order TEXT DEFAULT 'capsolver,yescaptcha,capmonster,ezcaptcha',
+                        captcha_provider_fallback_order TEXT DEFAULT 'yescaptcha,capsolver,capmonster,ezcaptcha',
                         yescaptcha_task_type_override TEXT DEFAULT '',
                         website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
                         page_action TEXT DEFAULT 'IMAGE_GENERATION',
@@ -489,7 +489,7 @@ class Database:
                     ("remote_browser_timeout", "INTEGER DEFAULT 60"),
                     ("captcha_enterprise_mode", "TEXT DEFAULT 'auto'"),
                     ("captcha_api_retry_on_evaluation_failed", "BOOLEAN DEFAULT 1"),
-                    ("captcha_provider_fallback_order", "TEXT DEFAULT 'capsolver,yescaptcha,capmonster,ezcaptcha'"),
+                    ("captcha_provider_fallback_order", "TEXT DEFAULT 'yescaptcha,capsolver,capmonster,ezcaptcha'"),
                     ("yescaptcha_task_type_override", "TEXT DEFAULT ''"),
                 ]
 
@@ -749,7 +749,7 @@ class Database:
                     remote_browser_timeout INTEGER DEFAULT 60,
                     captcha_enterprise_mode TEXT DEFAULT 'auto',
                     captcha_api_retry_on_evaluation_failed BOOLEAN DEFAULT 1,
-                    captcha_provider_fallback_order TEXT DEFAULT 'capsolver,yescaptcha,capmonster,ezcaptcha',
+                    captcha_provider_fallback_order TEXT DEFAULT 'yescaptcha,capsolver,capmonster,ezcaptcha',
                     yescaptcha_task_type_override TEXT DEFAULT '',
                     website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
                     page_action TEXT DEFAULT 'IMAGE_GENERATION',
@@ -1817,7 +1817,7 @@ class Database:
                 new_personal_idle_ttl = personal_idle_tab_ttl_seconds if personal_idle_tab_ttl_seconds is not None else current.get("personal_idle_tab_ttl_seconds", 600)
                 new_enterprise_mode = captcha_enterprise_mode if captcha_enterprise_mode is not None else current.get("captcha_enterprise_mode", "auto")
                 new_retry_eval_failed = captcha_api_retry_on_evaluation_failed if captcha_api_retry_on_evaluation_failed is not None else current.get("captcha_api_retry_on_evaluation_failed", True)
-                new_fallback_order = captcha_provider_fallback_order if captcha_provider_fallback_order is not None else current.get("captcha_provider_fallback_order", "capsolver,yescaptcha,capmonster,ezcaptcha")
+                new_fallback_order = captcha_provider_fallback_order if captcha_provider_fallback_order is not None else current.get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha")
                 new_yescaptcha_override = yescaptcha_task_type_override if yescaptcha_task_type_override is not None else current.get("yescaptcha_task_type_override", "")
                 new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else 60
                 new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))
@@ -1870,7 +1870,7 @@ class Database:
                 if new_enterprise_mode not in {"auto", "force_on", "force_off"}:
                     new_enterprise_mode = "auto"
                 new_retry_eval_failed = bool(True if captcha_api_retry_on_evaluation_failed is None else captcha_api_retry_on_evaluation_failed)
-                new_fallback_order = str(captcha_provider_fallback_order or "capsolver,yescaptcha,capmonster,ezcaptcha")
+                new_fallback_order = str(captcha_provider_fallback_order or "yescaptcha,capsolver,capmonster,ezcaptcha")
                 new_yescaptcha_override = str(yescaptcha_task_type_override or "")
                 new_remote_timeout = max(5, int(new_remote_timeout))
                 new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))

@@ -1489,7 +1489,7 @@ async def update_captcha_config(
     personal_idle_tab_ttl_seconds = request.get("personal_idle_tab_ttl_seconds")
     captcha_enterprise_mode = request.get("captcha_enterprise_mode", "auto")
     captcha_api_retry_on_evaluation_failed = request.get("captcha_api_retry_on_evaluation_failed", True)
-    captcha_provider_fallback_order = request.get("captcha_provider_fallback_order", "capsolver,yescaptcha,capmonster,ezcaptcha")
+    captcha_provider_fallback_order = request.get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha")
     yescaptcha_task_type_override = request.get("yescaptcha_task_type_override", "")
 
     # 验证浏览器代理URL格式
