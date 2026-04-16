@@ -75,18 +75,35 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(config.flow_max_retries, 9)
 
-    def test_parse_provider_fallback_order_respects_configured_order(self):
+    def test_parse_provider_fallback_order_explicit_yescaptcha_only(self):
+        order = parse_provider_fallback_order(
+            "yescaptcha",
+            primary="yescaptcha",
+            prepend_primary=False,
+        )
+        self.assertEqual(order, ["yescaptcha"])
+
+    def test_parse_provider_fallback_order_explicit_yescaptcha_capsolver_only(self):
         order = parse_provider_fallback_order(
             "yescaptcha,capsolver",
             primary="yescaptcha",
             prepend_primary=False,
         )
-        self.assertEqual(order[0], "yescaptcha")
-        self.assertEqual(order[1], "capsolver")
+        self.assertEqual(order, ["yescaptcha", "capsolver"])
 
-    def test_parse_provider_fallback_order_legacy_primary_prepend(self):
+    def test_parse_provider_fallback_order_ignores_unknown_and_dedupes(self):
+        order = parse_provider_fallback_order(
+            "yescaptcha,unknown,yescaptcha,capsolver",
+            primary="yescaptcha",
+            prepend_primary=False,
+        )
+        self.assertEqual(order, ["yescaptcha", "capsolver"])
+
+    def test_parse_provider_fallback_order_legacy_blank_still_expands(self):
         order = parse_provider_fallback_order("", primary="yescaptcha", prepend_primary=True)
         self.assertEqual(order[0], "yescaptcha")
+        for provider in ("yescaptcha", "capsolver", "capmonster", "ezcaptcha"):
+            self.assertIn(provider, order)
 
     def test_enterprise_mode_selection(self):
         self.assertTrue(resolve_enterprise_enabled("force_on", False))
@@ -141,7 +158,28 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(config.captcha_enterprise_mode, {"auto", "force_on", "force_off"})
         self.assertIsInstance(config.captcha_api_retry_on_evaluation_failed, bool)
 
-    async def test_retry_on_evaluation_failed_advances_provider(self):
+    async def test_retry_on_evaluation_failed_does_not_advance_with_yescaptcha_only(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        config.set_captcha_method("yescaptcha")
+        config.set_captcha_provider_fallback_order("yescaptcha")
+        config.set_captcha_api_retry_on_evaluation_failed(True)
+
+        current = client._get_current_api_provider("yescaptcha", "project-1", "IMAGE_GENERATION")
+        self.assertEqual(current, "yescaptcha")
+
+        should_retry = await client._handle_retryable_generation_error(
+            error=Exception("PUBLIC_ERROR_UNUSUAL_ACTIVITY: reCAPTCHA evaluation failed"),
+            retry_attempt=0,
+            max_retries=2,
+            browser_id=None,
+            project_id="project-1",
+            log_prefix="[TEST]",
+        )
+        self.assertTrue(should_retry)
+        current_after = client._get_current_api_provider("yescaptcha", "project-1", "IMAGE_GENERATION")
+        self.assertEqual(current_after, "yescaptcha")
+
+    async def test_retry_on_evaluation_failed_advances_provider_with_yescaptcha_capsolver(self):
         client = FlowClient(proxy_manager=None, db=self.db)
         config.set_captcha_method("yescaptcha")
         config.set_captcha_provider_fallback_order("yescaptcha,capsolver")

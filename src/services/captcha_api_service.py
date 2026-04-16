@@ -46,16 +46,22 @@ def parse_provider_fallback_order(
 ) -> List[str]:
     providers: List[str] = []
     seen = set()
+
     for item in (raw_order or "").split(","):
         normalized = item.strip().lower()
         if normalized in SUPPORTED_API_CAPTCHA_METHODS and normalized not in seen:
             providers.append(normalized)
             seen.add(normalized)
 
+    if providers:
+        if primary and primary in SUPPORTED_API_CAPTCHA_METHODS and prepend_primary:
+            if primary in providers:
+                providers.remove(primary)
+            providers.insert(0, primary)
+        return providers
+
     if primary and primary in SUPPORTED_API_CAPTCHA_METHODS and prepend_primary:
-        if primary in providers:
-            providers.remove(primary)
-        providers.insert(0, primary)
+        providers.append(primary)
         seen.add(primary)
 
     for provider in SUPPORTED_API_CAPTCHA_METHODS:
