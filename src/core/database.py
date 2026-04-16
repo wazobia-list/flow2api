@@ -226,6 +226,10 @@ class Database:
             personal_project_pool_size = 4
             personal_max_resident_tabs = 5
             personal_idle_tab_ttl_seconds = 600
+            captcha_enterprise_mode = "auto"
+            captcha_api_retry_on_evaluation_failed = True
+            captcha_provider_fallback_order = "yescaptcha,capsolver,capmonster,ezcaptcha"
+            yescaptcha_task_type_override = ""
 
             if config_dict:
                 captcha_config = config_dict.get("captcha", {})
@@ -239,6 +243,10 @@ class Database:
                 personal_project_pool_size = captcha_config.get("personal_project_pool_size", 4)
                 personal_max_resident_tabs = captcha_config.get("personal_max_resident_tabs", 5)
                 personal_idle_tab_ttl_seconds = captcha_config.get("personal_idle_tab_ttl_seconds", 600)
+                captcha_enterprise_mode = captcha_config.get("captcha_enterprise_mode", "auto")
+                captcha_api_retry_on_evaluation_failed = captcha_config.get("captcha_api_retry_on_evaluation_failed", True)
+                captcha_provider_fallback_order = captcha_config.get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha")
+                yescaptcha_task_type_override = captcha_config.get("yescaptcha_task_type_override", "")
             try:
                 remote_browser_timeout = max(5, int(remote_browser_timeout))
             except Exception:
@@ -265,9 +273,11 @@ class Database:
                     id, captcha_method, yescaptcha_api_key, yescaptcha_base_url,
                     remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                     browser_count, personal_project_pool_size,
-                    personal_max_resident_tabs, personal_idle_tab_ttl_seconds
+                    personal_max_resident_tabs, personal_idle_tab_ttl_seconds,
+                    captcha_enterprise_mode, captcha_api_retry_on_evaluation_failed,
+                    captcha_provider_fallback_order, yescaptcha_task_type_override
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 captcha_method,
                 yescaptcha_api_key,
@@ -279,6 +289,10 @@ class Database:
                 personal_project_pool_size,
                 personal_max_resident_tabs,
                 personal_idle_tab_ttl_seconds,
+                captcha_enterprise_mode,
+                bool(captcha_api_retry_on_evaluation_failed),
+                captcha_provider_fallback_order,
+                yescaptcha_task_type_override,
             ))
 
         # Ensure plugin_config has a row
@@ -367,6 +381,10 @@ class Database:
                         remote_browser_base_url TEXT DEFAULT '',
                         remote_browser_api_key TEXT DEFAULT '',
                         remote_browser_timeout INTEGER DEFAULT 60,
+                        captcha_enterprise_mode TEXT DEFAULT 'auto',
+                        captcha_api_retry_on_evaluation_failed BOOLEAN DEFAULT 1,
+                        captcha_provider_fallback_order TEXT DEFAULT 'yescaptcha,capsolver,capmonster,ezcaptcha',
+                        yescaptcha_task_type_override TEXT DEFAULT '',
                         website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
                         page_action TEXT DEFAULT 'IMAGE_GENERATION',
                         browser_proxy_enabled BOOLEAN DEFAULT 0,
@@ -469,6 +487,10 @@ class Database:
                     ("remote_browser_base_url", "TEXT DEFAULT ''"),
                     ("remote_browser_api_key", "TEXT DEFAULT ''"),
                     ("remote_browser_timeout", "INTEGER DEFAULT 60"),
+                    ("captcha_enterprise_mode", "TEXT DEFAULT 'auto'"),
+                    ("captcha_api_retry_on_evaluation_failed", "BOOLEAN DEFAULT 1"),
+                    ("captcha_provider_fallback_order", "TEXT DEFAULT 'yescaptcha,capsolver,capmonster,ezcaptcha'"),
+                    ("yescaptcha_task_type_override", "TEXT DEFAULT ''"),
                 ]
 
                 for col_name, col_type in captcha_columns_to_add:
@@ -725,6 +747,10 @@ class Database:
                     remote_browser_base_url TEXT DEFAULT '',
                     remote_browser_api_key TEXT DEFAULT '',
                     remote_browser_timeout INTEGER DEFAULT 60,
+                    captcha_enterprise_mode TEXT DEFAULT 'auto',
+                    captcha_api_retry_on_evaluation_failed BOOLEAN DEFAULT 1,
+                    captcha_provider_fallback_order TEXT DEFAULT 'yescaptcha,capsolver,capmonster,ezcaptcha',
+                    yescaptcha_task_type_override TEXT DEFAULT '',
                     website_key TEXT DEFAULT '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV',
                     page_action TEXT DEFAULT 'IMAGE_GENERATION',
 
@@ -1619,6 +1645,10 @@ class Database:
             config.set_personal_project_pool_size(captcha_config.personal_project_pool_size)
             config.set_personal_max_resident_tabs(captcha_config.personal_max_resident_tabs)
             config.set_personal_idle_tab_ttl_seconds(captcha_config.personal_idle_tab_ttl_seconds)
+            config.set_captcha_enterprise_mode(captcha_config.captcha_enterprise_mode)
+            config.set_captcha_api_retry_on_evaluation_failed(captcha_config.captcha_api_retry_on_evaluation_failed)
+            config.set_captcha_provider_fallback_order(captcha_config.captcha_provider_fallback_order)
+            config.set_yescaptcha_task_type_override(captcha_config.yescaptcha_task_type_override)
 
     # Cache config operations
     async def get_cache_config(self) -> CacheConfig:
@@ -1753,7 +1783,11 @@ class Database:
         browser_count: int = None,
         personal_project_pool_size: int = None,
         personal_max_resident_tabs: int = None,
-        personal_idle_tab_ttl_seconds: int = None
+        personal_idle_tab_ttl_seconds: int = None,
+        captcha_enterprise_mode: str = None,
+        captcha_api_retry_on_evaluation_failed: bool = None,
+        captcha_provider_fallback_order: str = None,
+        yescaptcha_task_type_override: str = None,
     ):
         """Update captcha configuration"""
         async with self._connect(write=True) as db:
@@ -1781,10 +1815,17 @@ class Database:
                 new_personal_project_pool_size = personal_project_pool_size if personal_project_pool_size is not None else current.get("personal_project_pool_size", 4)
                 new_personal_max_tabs = personal_max_resident_tabs if personal_max_resident_tabs is not None else current.get("personal_max_resident_tabs", 5)
                 new_personal_idle_ttl = personal_idle_tab_ttl_seconds if personal_idle_tab_ttl_seconds is not None else current.get("personal_idle_tab_ttl_seconds", 600)
+                new_enterprise_mode = captcha_enterprise_mode if captcha_enterprise_mode is not None else current.get("captcha_enterprise_mode", "auto")
+                new_retry_eval_failed = captcha_api_retry_on_evaluation_failed if captcha_api_retry_on_evaluation_failed is not None else current.get("captcha_api_retry_on_evaluation_failed", True)
+                new_fallback_order = captcha_provider_fallback_order if captcha_provider_fallback_order is not None else current.get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha")
+                new_yescaptcha_override = yescaptcha_task_type_override if yescaptcha_task_type_override is not None else current.get("yescaptcha_task_type_override", "")
                 new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else 60
                 new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))
                 new_personal_max_tabs = max(1, min(50, int(new_personal_max_tabs)))  # 限制1-50
                 new_personal_idle_ttl = max(60, int(new_personal_idle_ttl))  # 最少60秒
+                new_enterprise_mode = str(new_enterprise_mode or "auto").strip().lower()
+                if new_enterprise_mode not in {"auto", "force_on", "force_off"}:
+                    new_enterprise_mode = "auto"
 
                 await db.execute("""
                     UPDATE captcha_config
@@ -1796,13 +1837,16 @@ class Database:
                         browser_proxy_enabled = ?, browser_proxy_url = ?, browser_count = ?,
                         personal_project_pool_size = ?,
                         personal_max_resident_tabs = ?, personal_idle_tab_ttl_seconds = ?,
+                        captcha_enterprise_mode = ?, captcha_api_retry_on_evaluation_failed = ?,
+                        captcha_provider_fallback_order = ?, yescaptcha_task_type_override = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
                 """, (new_method, new_yes_key, new_yes_url, new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
                       (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_proxy_enabled, new_proxy_url, new_browser_count, new_personal_project_pool_size,
-                      new_personal_max_tabs, new_personal_idle_ttl))
+                      new_personal_max_tabs, new_personal_idle_ttl, new_enterprise_mode,
+                      bool(new_retry_eval_failed), str(new_fallback_order or ""), str(new_yescaptcha_override or "")))
             else:
                 new_method = captcha_method if captcha_method is not None else "yescaptcha"
                 new_yes_key = yescaptcha_api_key if yescaptcha_api_key is not None else ""
@@ -1822,6 +1866,12 @@ class Database:
                 new_personal_project_pool_size = personal_project_pool_size if personal_project_pool_size is not None else 4
                 new_personal_max_tabs = personal_max_resident_tabs if personal_max_resident_tabs is not None else 5
                 new_personal_idle_ttl = personal_idle_tab_ttl_seconds if personal_idle_tab_ttl_seconds is not None else 600
+                new_enterprise_mode = str(captcha_enterprise_mode or "auto").strip().lower()
+                if new_enterprise_mode not in {"auto", "force_on", "force_off"}:
+                    new_enterprise_mode = "auto"
+                new_retry_eval_failed = bool(True if captcha_api_retry_on_evaluation_failed is None else captcha_api_retry_on_evaluation_failed)
+                new_fallback_order = str(captcha_provider_fallback_order or "yescaptcha,capsolver,capmonster,ezcaptcha")
+                new_yescaptcha_override = str(yescaptcha_task_type_override or "")
                 new_remote_timeout = max(5, int(new_remote_timeout))
                 new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))
                 new_personal_max_tabs = max(1, min(50, int(new_personal_max_tabs)))
@@ -1834,13 +1884,16 @@ class Database:
                         remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                         browser_proxy_enabled, browser_proxy_url, browser_count,
                         personal_project_pool_size,
-                        personal_max_resident_tabs, personal_idle_tab_ttl_seconds)
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        personal_max_resident_tabs, personal_idle_tab_ttl_seconds,
+                        captcha_enterprise_mode, captcha_api_retry_on_evaluation_failed,
+                        captcha_provider_fallback_order, yescaptcha_task_type_override)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (new_method, new_yes_key, new_yes_url, new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
                       (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_proxy_enabled, new_proxy_url, new_browser_count, new_personal_project_pool_size,
-                      new_personal_max_tabs, new_personal_idle_ttl))
+                      new_personal_max_tabs, new_personal_idle_ttl, new_enterprise_mode,
+                      new_retry_eval_failed, new_fallback_order, new_yescaptcha_override))
 
             await db.commit()
 

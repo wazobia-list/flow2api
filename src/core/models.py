@@ -197,6 +197,10 @@ class CaptchaConfig(BaseModel):
     personal_project_pool_size: int = 4  # 单个 Token 默认维护的项目池数量（仅影响项目轮换）
     personal_max_resident_tabs: int = 5  # 内置浏览器共享打码标签页数量上限
     personal_idle_tab_ttl_seconds: int = 600  # 内置浏览器标签页空闲超时(秒)
+    captcha_enterprise_mode: str = "auto"  # auto/force_on/force_off
+    captcha_api_retry_on_evaluation_failed: bool = True
+    captcha_provider_fallback_order: str = "yescaptcha,capsolver,capmonster,ezcaptcha"
+    yescaptcha_task_type_override: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

@@ -18,6 +18,11 @@ from ..core.config import config
 from ..services.token_manager import TokenManager
 from ..services.proxy_manager import ProxyManager
 from ..services.concurrency_manager import ConcurrencyManager
+from ..services.captcha_api_service import (
+    SUPPORTED_API_CAPTCHA_METHODS,
+    CaptchaProviderError,
+    solve_with_provider,
+)
 
 try:
     import httpx
@@ -34,8 +39,6 @@ concurrency_manager: Optional[ConcurrencyManager] = None
 
 # Store active admin session tokens (in production, use Redis or database)
 active_admin_tokens = set()
-SUPPORTED_API_CAPTCHA_METHODS = {"yescaptcha", "capmonster", "ezcaptcha", "capsolver"}
-
 
 def _mask_token(token: Optional[str]) -> str:
     if not token:
@@ -334,77 +337,16 @@ async def _solve_recaptcha_with_api_service(
     enterprise: bool = False
 ) -> Optional[str]:
     """使用当前配置的第三方打码服务获取 token。"""
-    if method == "yescaptcha":
-        client_key = config.yescaptcha_api_key
-        base_url = config.yescaptcha_base_url
-        task_type = "RecaptchaV3TaskProxylessM1"
-    elif method == "capmonster":
-        client_key = config.capmonster_api_key
-        base_url = config.capmonster_base_url
-        task_type = "RecaptchaV3TaskProxyless"
-    elif method == "ezcaptcha":
-        client_key = config.ezcaptcha_api_key
-        base_url = config.ezcaptcha_base_url
-        task_type = "ReCaptchaV3TaskProxylessS9"
-    elif method == "capsolver":
-        client_key = config.capsolver_api_key
-        base_url = config.capsolver_base_url
-        task_type = "ReCaptchaV3EnterpriseTaskProxyLess" if enterprise else "ReCaptchaV3TaskProxyLess"
-    else:
-        raise RuntimeError(f"不支持的打码方式: {method}")
-
-    if not client_key:
-        raise RuntimeError(f"{method} API Key 未配置")
-
-    task: Dict[str, Any] = {
-        "websiteURL": website_url,
-        "websiteKey": website_key,
-        "type": task_type,
-        "pageAction": action,
-    }
-
-    if enterprise and method == "capsolver":
-        task["isEnterprise"] = True
-
-    create_url = f"{base_url.rstrip('/')}/createTask"
-    get_url = f"{base_url.rstrip('/')}/getTaskResult"
-
-    # Do not use curl_cffi impersonation for captcha API JSON endpoints: some ASGI servers
-    # (for example FastAPI/Uvicorn) may receive an empty body and return 422.
-    async with AsyncSession() as session:
-        create_resp = await session.post(
-            create_url,
-            json={"clientKey": client_key, "task": task},
-            timeout=30
+    try:
+        return await solve_with_provider(
+            provider=method,
+            website_url=website_url,
+            website_key=website_key,
+            action=action,
+            enterprise_required=enterprise,
         )
-        create_json = create_resp.json()
-        task_id = create_json.get("taskId")
-
-        if not task_id:
-            error_desc = create_json.get("errorDescription") or create_json.get("errorMessage") or str(create_json)
-            raise RuntimeError(f"{method} createTask 失败: {error_desc}")
-
-        for _ in range(40):
-            poll_resp = await session.post(
-                get_url,
-                json={"clientKey": client_key, "taskId": task_id},
-                timeout=30
-            )
-            poll_json = poll_resp.json()
-            if poll_json.get("status") == "ready":
-                solution = poll_json.get("solution", {}) or {}
-                token = solution.get("gRecaptchaResponse") or solution.get("token")
-                if token:
-                    return token
-                raise RuntimeError(f"{method} 返回结果缺少 token: {poll_json}")
-
-            if poll_json.get("errorId") not in (None, 0):
-                error_desc = poll_json.get("errorDescription") or poll_json.get("errorMessage") or str(poll_json)
-                raise RuntimeError(f"{method} getTaskResult 失败: {error_desc}")
-
-            await asyncio.sleep(3)
-
-    raise RuntimeError(f"{method} 获取 token 超时")
+    except CaptchaProviderError as e:
+        raise RuntimeError(str(e)) from e
 
 
 async def _score_test_with_remote_browser_service(
@@ -1545,6 +1487,10 @@ async def update_captcha_config(
     personal_project_pool_size = request.get("personal_project_pool_size")
     personal_max_resident_tabs = request.get("personal_max_resident_tabs")
     personal_idle_tab_ttl_seconds = request.get("personal_idle_tab_ttl_seconds")
+    captcha_enterprise_mode = request.get("captcha_enterprise_mode", "auto")
+    captcha_api_retry_on_evaluation_failed = request.get("captcha_api_retry_on_evaluation_failed", True)
+    captcha_provider_fallback_order = request.get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha")
+    yescaptcha_task_type_override = request.get("yescaptcha_task_type_override", "")
 
     # 验证浏览器代理URL格式
     if browser_proxy_enabled and browser_proxy_url:
@@ -1587,7 +1533,11 @@ async def update_captcha_config(
         browser_count=max(1, int(browser_count)) if browser_count else 1,
         personal_project_pool_size=personal_project_pool_size,
         personal_max_resident_tabs=personal_max_resident_tabs,
-        personal_idle_tab_ttl_seconds=personal_idle_tab_ttl_seconds
+        personal_idle_tab_ttl_seconds=personal_idle_tab_ttl_seconds,
+        captcha_enterprise_mode=captcha_enterprise_mode,
+        captcha_api_retry_on_evaluation_failed=bool(captcha_api_retry_on_evaluation_failed),
+        captcha_provider_fallback_order=captcha_provider_fallback_order,
+        yescaptcha_task_type_override=yescaptcha_task_type_override,
     )
 
     # 🔥 Hot reload: sync database config to memory
@@ -1636,7 +1586,11 @@ async def get_captcha_config(token: str = Depends(verify_admin_token)):
         "browser_count": captcha_config.browser_count,
         "personal_project_pool_size": captcha_config.personal_project_pool_size,
         "personal_max_resident_tabs": captcha_config.personal_max_resident_tabs,
-        "personal_idle_tab_ttl_seconds": captcha_config.personal_idle_tab_ttl_seconds
+        "personal_idle_tab_ttl_seconds": captcha_config.personal_idle_tab_ttl_seconds,
+        "captcha_enterprise_mode": captcha_config.captcha_enterprise_mode,
+        "captcha_api_retry_on_evaluation_failed": captcha_config.captcha_api_retry_on_evaluation_failed,
+        "captcha_provider_fallback_order": captcha_config.captcha_provider_fallback_order,
+        "yescaptcha_task_type_override": captcha_config.yescaptcha_task_type_override,
     }
 
 
