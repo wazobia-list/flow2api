@@ -533,6 +533,46 @@ class Config:
         self._config["captcha"]["capsolver_base_url"] = base_url
 
     @property
+    def captcha_enterprise_mode(self) -> str:
+        mode = str(self._config.get("captcha", {}).get("captcha_enterprise_mode", "auto") or "auto").strip().lower()
+        return mode if mode in {"auto", "force_on", "force_off"} else "auto"
+
+    def set_captcha_enterprise_mode(self, mode: str):
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        normalized = str(mode or "auto").strip().lower()
+        if normalized not in {"auto", "force_on", "force_off"}:
+            normalized = "auto"
+        self._config["captcha"]["captcha_enterprise_mode"] = normalized
+
+    @property
+    def captcha_api_retry_on_evaluation_failed(self) -> bool:
+        return bool(self._config.get("captcha", {}).get("captcha_api_retry_on_evaluation_failed", True))
+
+    def set_captcha_api_retry_on_evaluation_failed(self, enabled: bool):
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        self._config["captcha"]["captcha_api_retry_on_evaluation_failed"] = bool(enabled)
+
+    @property
+    def captcha_provider_fallback_order(self) -> str:
+        return str(self._config.get("captcha", {}).get("captcha_provider_fallback_order", "yescaptcha,capsolver,capmonster,ezcaptcha") or "")
+
+    def set_captcha_provider_fallback_order(self, order: str):
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        self._config["captcha"]["captcha_provider_fallback_order"] = str(order or "")
+
+    @property
+    def yescaptcha_task_type_override(self) -> str:
+        return str(self._config.get("captcha", {}).get("yescaptcha_task_type_override", "") or "")
+
+    def set_yescaptcha_task_type_override(self, task_type: str):
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        self._config["captcha"]["yescaptcha_task_type_override"] = str(task_type or "")
+
+    @property
     def remote_browser_base_url(self) -> str:
         """Get remote browser captcha service base URL"""
         return self._config.get("captcha", {}).get("remote_browser_base_url", "")
