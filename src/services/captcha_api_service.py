@@ -169,10 +169,15 @@ async def _read_response_debug_payload(resp) -> dict:
     elif isinstance(text_reader, str):
         text = text_reader
 
-    content_type = resp.headers.get("content-type", "")
+    status = getattr(resp, "status_code", None)
+    if status is None:
+        status = getattr(resp, "status", None)
+
+    headers = getattr(resp, "headers", {}) or {}
+    content_type = headers.get("content-type") or headers.get("Content-Type") or ""
     snippet = (text or "")[:500]
     payload = {
-        "status": resp.status,
+        "status": status,
         "content_type": content_type,
         "text": text,
         "snippet": snippet,
