@@ -61,6 +61,10 @@ class FlowClient:
             "last_api_fingerprint_apply_ctx",
             default=None,
         )
+        self._remote_browser_session_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+            "remote_browser_session_ctx",
+            default=None,
+        )
 
         # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
         # These will be applied as defaults (won't override caller-provided headers).
@@ -165,6 +169,34 @@ class FlowClient:
     def clear_request_fingerprint(self):
         """清理请求链路绑定的浏览器指纹。"""
         self._set_request_fingerprint(None)
+
+    def _set_remote_browser_session(
+        self,
+        session_id: Optional[str],
+        project_id: Optional[str] = None,
+        action: Optional[str] = None,
+        fingerprint: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not session_id:
+            self._remote_browser_session_ctx.set(None)
+            return
+        self._remote_browser_session_ctx.set(
+            {
+                "session_id": str(session_id),
+                "project_id": str(project_id or ""),
+                "action": str(action or ""),
+                "fingerprint": dict(fingerprint) if isinstance(fingerprint, dict) else None,
+            }
+        )
+
+    def _get_remote_browser_session(self) -> Optional[Dict[str, Any]]:
+        payload = self._remote_browser_session_ctx.get()
+        if not isinstance(payload, dict) or not payload.get("session_id"):
+            return None
+        return dict(payload)
+
+    def _clear_remote_browser_session(self) -> None:
+        self._remote_browser_session_ctx.set(None)
 
     def _clear_last_api_captcha_solution(self) -> None:
         self._last_api_captcha_solution_ctx.set(None)
@@ -285,6 +317,154 @@ class FlowClient:
         )
         return normalized
 
+    def _should_use_remote_browser_submit(
+        self,
+        url: str,
+        json_data: Optional[Dict[str, Any]],
+    ) -> bool:
+        if config.captcha_method != "remote_browser":
+            return False
+        if not self._contains_recaptcha_token_body(json_data):
+            return False
+        if not self._get_remote_browser_session():
+            return False
+        if not url:
+            return False
+        target = str(url).strip()
+        return target.startswith(self.api_base_url)
+
+    def _build_remote_browser_submit_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
+        source = dict(headers or {})
+        allowed_exact = {
+            "authorization",
+            "content-type",
+            "accept",
+            "x-browser-channel",
+            "x-browser-copyright",
+            "x-browser-validation",
+            "x-browser-year",
+        }
+        result: Dict[str, str] = {}
+        for key, value in source.items():
+            if value is None:
+                continue
+            lowered = key.lower()
+            if lowered in allowed_exact:
+                result[key] = value
+        debug_logger.log_info(
+            f"[RemoteBrowser Submit] forwarding_headers={sorted([k.lower() for k in result.keys()])}"
+        )
+        return result
+
+    async def _make_request_via_remote_browser_session(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        remote_session = self._get_remote_browser_session()
+        if not remote_session:
+            raise RuntimeError("remote_browser 会话不存在，无法通过同一浏览器会话提交 Flow 请求")
+
+        submit_headers = self._build_remote_browser_submit_headers(headers or {})
+        request_timeout = int(timeout or self.timeout)
+        payload = {
+            "method": (method or "POST").upper(),
+            "url": url,
+            "headers": submit_headers,
+            "json": json_data,
+            "timeout": request_timeout,
+            "expect_json": True,
+        }
+        session_id = quote(str(remote_session["session_id"]), safe="")
+        path = f"/api/v1/sessions/{session_id}/flow-request"
+
+        debug_logger.log_info(
+            f"[RemoteBrowser Submit] same-session submit session_id={remote_session['session_id']} "
+            f"url={url} method={(method or 'POST').upper()}"
+        )
+        if config.debug_enabled:
+            logged_body = (
+                self._redact_recaptcha_token_body(json_data)
+                if self._contains_recaptcha_token_body(json_data)
+                else json_data
+            )
+            debug_logger.log_request(
+                method="POST",
+                url=path,
+                headers={"Content-Type": "application/json"},
+                body={
+                    "method": payload["method"],
+                    "url": payload["url"],
+                    "headers": submit_headers,
+                    "json": logged_body,
+                    "timeout": payload["timeout"],
+                    "expect_json": payload["expect_json"],
+                },
+                proxy=None,
+            )
+
+        start_time = time.time()
+        try:
+            response_payload = await self._call_remote_browser_service(
+                method="POST",
+                path=path,
+                json_data=payload,
+                timeout_override=max(5, request_timeout),
+            )
+        except Exception as e:
+            error_lower = str(e).lower()
+            if any(
+                keyword in error_lower
+                for keyword in ["404", "not found", "unknown path", "返回格式错误"]
+            ):
+                raise RuntimeError(
+                    "remote_browser 服务未实现同会话 Flow 提交接口 /api/v1/sessions/{session_id}/flow-request，"
+                    "请先升级 remote_browser 服务"
+                ) from e
+            raise
+
+        duration_ms = (time.time() - start_time) * 1000
+        status_code = int(response_payload.get("status_code") or 0)
+        resp_headers = response_payload.get("headers") or {}
+        resp_body_text = response_payload.get("body") or ""
+        resp_json = response_payload.get("json")
+        if resp_json is None and resp_body_text:
+            resp_json = self._parse_json_response_text(resp_body_text)
+
+        if config.debug_enabled:
+            safe_response_body = resp_json if resp_json is not None else (resp_body_text[:1000] if resp_body_text else "")
+            debug_logger.log_response(
+                status_code=status_code,
+                headers=resp_headers if isinstance(resp_headers, dict) else {},
+                body=safe_response_body,
+                duration_ms=duration_ms,
+            )
+
+        if status_code >= 400:
+            error_reason = f"HTTP Error {status_code}"
+            error_body = resp_json if isinstance(resp_json, dict) else {}
+            if isinstance(error_body, dict) and "error" in error_body:
+                error_info = error_body.get("error") or {}
+                error_message = error_info.get("message", "")
+                details = error_info.get("details", [])
+                if isinstance(details, list):
+                    for detail in details:
+                        if isinstance(detail, dict) and detail.get("reason"):
+                            error_reason = detail.get("reason")
+                            break
+                if error_message:
+                    error_reason = f"{error_reason}: {error_message}"
+            elif resp_body_text:
+                error_reason = f"HTTP Error {status_code}: {resp_body_text[:200]}"
+            raise Exception(error_reason)
+
+        if not isinstance(resp_json, dict):
+            raise RuntimeError("remote_browser 同会话提交返回了非 JSON 响应")
+        return resp_json
+
     async def _make_request(
         self,
         method: str,
@@ -399,6 +579,16 @@ class FlowClient:
                 headers=headers,
                 body=logged_body,
                 proxy=proxy_url
+            )
+
+        if self._should_use_remote_browser_submit(url, json_data):
+            debug_logger.log_info("[RemoteBrowser Submit] 检测到 recaptcha 提交请求，改走同浏览器会话提交")
+            return await self._make_request_via_remote_browser_session(
+                method=method,
+                url=url,
+                headers=headers,
+                json_data=json_data,
+                timeout=timeout,
             )
 
         start_time = time.time()
@@ -2289,6 +2479,10 @@ class FlowClient:
                 )
             except Exception as e:
                 debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 上报 error 失败: {e}")
+            finally:
+                self._clear_remote_browser_session()
+        elif config.captcha_method == "remote_browser":
+            self._clear_remote_browser_session()
 
     async def _notify_browser_captcha_request_finished(self, browser_id: Optional[Union[int, str]] = None):
         """通知有头浏览器：上游图片/视频请求已结束，可关闭对应打码浏览器。"""
@@ -2310,6 +2504,10 @@ class FlowClient:
                 )
             except Exception as e:
                 debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 上报 finish 失败: {e}")
+            finally:
+                self._clear_remote_browser_session()
+        elif config.captcha_method == "remote_browser":
+            self._clear_remote_browser_session()
 
     def _generate_session_id(self) -> str:
         """生成sessionId: ;timestamp"""
@@ -2571,6 +2769,7 @@ class FlowClient:
         captcha_method = config.captcha_method
         self._clear_last_api_captcha_error()
         self._clear_last_api_captcha_solution()
+        self._clear_remote_browser_session()
         debug_logger.log_info(f"[reCAPTCHA] 开始获取 token: method={captcha_method}, project_id={project_id}, action={action}")
 
         # 内置浏览器打码 (nodriver)
@@ -2644,12 +2843,19 @@ class FlowClient:
                 session_id = payload.get("session_id")
                 fingerprint = payload.get("fingerprint") if isinstance(payload.get("fingerprint"), dict) else None
                 self._set_request_fingerprint(fingerprint if token else None)
+                self._set_remote_browser_session(
+                    session_id=session_id if token else None,
+                    project_id=project_id,
+                    action=action,
+                    fingerprint=fingerprint if token else None,
+                )
                 if not token or not session_id:
                     raise RuntimeError(f"remote_browser 返回缺少 token/session_id: {payload}")
                 return token, str(session_id)
             except Exception as e:
                 debug_logger.log_error(f"[reCAPTCHA RemoteBrowser] 错误: {str(e)}")
                 self._set_request_fingerprint(None)
+                self._clear_remote_browser_session()
                 return None, None
         # API打码服务
         elif captcha_method in SUPPORTED_API_CAPTCHA_METHODS:

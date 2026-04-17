@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from src.core.config import config
 from src.core.database import Database
@@ -257,6 +257,87 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("gRecaptchaResponse", solution.solution_keys)
         finally:
             config.set_yescaptcha_api_key(original_key)
+
+    async def test_should_use_remote_browser_submit_true_for_recaptcha_flow_request(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        config.set_captcha_method("remote_browser")
+        client._set_remote_browser_session(session_id="sess-1", project_id="p1", action="VIDEO_GENERATION")
+        payload = {"clientContext": {"recaptchaContext": {"token": "abc"}}}
+        url = f"{client.api_base_url}/video:batchAsyncGenerateVideoText"
+        self.assertTrue(client._should_use_remote_browser_submit(url, payload))
+
+    async def test_should_use_remote_browser_submit_false_without_session(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        config.set_captcha_method("remote_browser")
+        payload = {"clientContext": {"recaptchaContext": {"token": "abc"}}}
+        url = f"{client.api_base_url}/video:batchAsyncGenerateVideoText"
+        self.assertFalse(client._should_use_remote_browser_submit(url, payload))
+
+    async def test_build_remote_browser_submit_headers_strips_browser_identity_headers(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        headers = {
+            "User-Agent": "UA",
+            "sec-ch-ua": '"Chromium"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Linux"',
+            "sec-fetch-site": "cross-site",
+            "x-client-data": "abc",
+            "authorization": "Bearer token",
+            "Content-Type": "application/json",
+            "x-browser-validation": "validation",
+            "x-browser-year": "2026",
+            "x-browser-channel": "stable",
+            "x-browser-copyright": "copyright",
+        }
+        filtered = client._build_remote_browser_submit_headers(headers)
+        lowered = {key.lower() for key in filtered.keys()}
+        self.assertIn("authorization", lowered)
+        self.assertIn("content-type", lowered)
+        self.assertIn("x-browser-validation", lowered)
+        self.assertIn("x-browser-year", lowered)
+        self.assertIn("x-browser-channel", lowered)
+        self.assertIn("x-browser-copyright", lowered)
+        self.assertNotIn("user-agent", lowered)
+        self.assertFalse(any(key.startswith("sec-ch-") for key in lowered))
+        self.assertFalse(any(key.startswith("sec-fetch-") for key in lowered))
+        self.assertNotIn("x-client-data", lowered)
+
+    async def test_make_request_routes_to_remote_browser_submit_when_needed(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        with (
+            patch.object(client, "_should_use_remote_browser_submit", return_value=True),
+            patch.object(
+                client,
+                "_make_request_via_remote_browser_session",
+                new=AsyncMock(return_value={"ok": True}),
+            ) as mocked_remote_submit,
+            patch("src.services.flow_client.AsyncSession", side_effect=AssertionError("should not call AsyncSession")),
+        ):
+            result = await client._make_request(
+                method="POST",
+                url=f"{client.api_base_url}/video:batchAsyncGenerateVideoText",
+                headers={"authorization": "Bearer t"},
+                json_data={"clientContext": {"recaptchaContext": {"token": "abc"}}},
+            )
+        self.assertEqual(result, {"ok": True})
+        mocked_remote_submit.assert_awaited_once()
+
+    async def test_remote_browser_same_session_submit_missing_endpoint_raises_clear_error(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        client._set_remote_browser_session(session_id="sess-404", project_id="p1", action="VIDEO_GENERATION")
+        with patch.object(
+            client,
+            "_call_remote_browser_service",
+            new=AsyncMock(side_effect=RuntimeError("remote_browser 请求失败: 404 not found")),
+        ):
+            with self.assertRaises(RuntimeError) as exc:
+                await client._make_request_via_remote_browser_session(
+                    method="POST",
+                    url=f"{client.api_base_url}/video:batchAsyncGenerateVideoText",
+                    headers={"authorization": "Bearer t"},
+                    json_data={"clientContext": {"recaptchaContext": {"token": "abc"}}},
+                )
+        self.assertIn("请先升级 remote_browser 服务", str(exc.exception))
 
     def test_apply_api_captcha_submission_fingerprint_uses_provider_user_agent(self):
         client = FlowClient(proxy_manager=None, db=self.db)
