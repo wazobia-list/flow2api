@@ -1,8 +1,9 @@
 """Admin API routes"""
 import asyncio
 import json
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import secrets
@@ -1258,6 +1259,35 @@ async def clear_logs(token: str = Depends(verify_admin_token)):
         return {"success": True, "message": "所有日志已清空"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/debug-log/download")
+async def download_debug_log(token: str = Depends(verify_admin_token)):
+    """Download logs.txt debug log file."""
+    log_file = Path("logs.txt")
+    if not log_file.exists() or not log_file.is_file():
+        raise HTTPException(status_code=404, detail="logs.txt 不存在")
+
+    return FileResponse(
+        path=log_file,
+        filename="logs.txt",
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+@router.delete("/api/debug-log")
+async def delete_debug_log(token: str = Depends(verify_admin_token)):
+    """Delete logs.txt debug log file."""
+    log_file = Path("logs.txt")
+    if not log_file.exists():
+        return {"success": True, "message": "logs.txt 不存在，无需删除"}
+
+    try:
+        log_file.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除 logs.txt 失败: {e}")
+
+    return {"success": True, "message": "logs.txt 已删除"}
 
 
 @router.get("/api/admin/config")

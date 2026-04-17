@@ -1,7 +1,6 @@
 """Debug logger module for detailed API request/response logging"""
 import json
 import logging
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -40,15 +39,8 @@ class DebugLogger:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
 
-        # Create stream handler for stdout (Render live logs)
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setLevel(logging.DEBUG)
-        stream_handler.setFormatter(formatter)
-
-        # Add handlers
+        # Add handler
         self.logger.addHandler(file_handler)
-        self.logger.addHandler(stream_handler)
-        self.logger.info("Debug logger initialized with file and stdout handlers")
 
     def _mask_token(self, token: str) -> str:
         """Mask token for logging (show first 6 and last 6 characters)"""
