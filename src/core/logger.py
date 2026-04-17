@@ -18,9 +18,17 @@ class DebugLogger:
         # Create logger
         self.logger = logging.getLogger("debug_logger")
         self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = False
 
         # Remove existing handlers
-        self.logger.handlers.clear()
+        if self.logger.handlers:
+            self.logger.handlers.clear()
+
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
 
         # Create file handler
         file_handler = logging.FileHandler(
@@ -29,19 +37,10 @@ class DebugLogger:
             encoding='utf-8'
         )
         file_handler.setLevel(logging.DEBUG)
-
-        # Create formatter
-        formatter = logging.Formatter(
-            '%(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
         file_handler.setFormatter(formatter)
 
         # Add handler
         self.logger.addHandler(file_handler)
-
-        # Prevent propagation to root logger
-        self.logger.propagate = False
 
     def _mask_token(self, token: str) -> str:
         """Mask token for logging (show first 6 and last 6 characters)"""
