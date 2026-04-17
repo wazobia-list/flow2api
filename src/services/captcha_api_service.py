@@ -1,5 +1,6 @@
 """Shared API captcha provider utilities and solver."""
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -156,6 +157,39 @@ def build_captcha_task_plan(
     return plan
 
 
+async def _read_response_debug_payload(resp) -> dict:
+    text_reader = getattr(resp, "text", None)
+    text = ""
+    if callable(text_reader):
+        text_result = text_reader()
+        if asyncio.iscoroutine(text_result):
+            text = await text_result
+        else:
+            text = text_result or ""
+    elif isinstance(text_reader, str):
+        text = text_reader
+
+    content_type = resp.headers.get("content-type", "")
+    snippet = (text or "")[:500]
+    payload = {
+        "status": resp.status,
+        "content_type": content_type,
+        "text": text,
+        "snippet": snippet,
+        "is_json": "application/json" in content_type.lower(),
+    }
+    return payload
+
+
+def _safe_parse_json_from_text(text: str):
+    if not text or not text.strip():
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
 async def solve_with_provider(
     provider: str,
     website_url: str,
@@ -194,8 +228,37 @@ async def solve_with_provider(
 
     async with AsyncSession() as session:
         create_resp = await session.post(create_url, json={"clientKey": plan.client_key, "task": task}, timeout=30)
-        create_json = create_resp.json()
+        create_payload = await _read_response_debug_payload(create_resp)
+        create_text = create_payload["text"]
+        create_content_type = create_payload["content_type"]
+        create_snippet = create_payload["snippet"]
+        debug_logger.log_info(
+            f"[reCAPTCHA {plan.provider}] createTask http_status={create_payload['status']} "
+            f"content_type={create_content_type} url={create_url} snippet={create_snippet!r}"
+        )
+
+        create_json = _safe_parse_json_from_text(create_text)
+        if create_json is None:
+            is_empty = not create_text or not create_text.strip()
+            error_code = "provider_empty_response" if is_empty else "provider_non_json_response"
+            detail = (
+                f"status={create_payload['status']}, content_type={create_content_type}, "
+                f"snippet={create_snippet!r}"
+            )
+            raise CaptchaProviderError(
+                f"{error_code}: {plan.provider}",
+                code=error_code,
+                provider=plan.provider,
+                detail=detail,
+            )
+
         task_id = create_json.get("taskId")
+        debug_logger.log_info(
+            f"[reCAPTCHA {plan.provider}] createTask summary: "
+            f"errorId={create_json.get('errorId')}, "
+            f"taskId={task_id}, "
+            f"status={create_json.get('status')}"
+        )
         debug_logger.log_info(
             f"[reCAPTCHA {plan.provider}] createTask summary: task_id={task_id}, errorId={create_json.get('errorId')}, "
             f"error={create_json.get('errorDescription') or create_json.get('errorMessage')}, project_id={project_id}, "
@@ -214,16 +277,47 @@ async def solve_with_provider(
         poll_errors = 0
         for index in range(40):
             poll_resp = await session.post(get_url, json={"clientKey": plan.client_key, "taskId": task_id}, timeout=30)
-            poll_json = poll_resp.json()
+            poll_payload = await _read_response_debug_payload(poll_resp)
+            poll_text = poll_payload["text"]
+            poll_content_type = poll_payload["content_type"]
+            poll_snippet = poll_payload["snippet"]
+            debug_logger.log_info(
+                f"[reCAPTCHA {plan.provider}] poll#{index + 1} http_status={poll_payload['status']} "
+                f"content_type={poll_content_type} url={get_url} snippet={poll_snippet!r}"
+            )
+
+            poll_json = _safe_parse_json_from_text(poll_text)
+            if poll_json is None:
+                is_empty = not poll_text or not poll_text.strip()
+                error_code = "provider_poll_empty_response" if is_empty else "provider_poll_non_json_response"
+                detail = (
+                    f"status={poll_payload['status']}, content_type={poll_content_type}, "
+                    f"snippet={poll_snippet!r}"
+                )
+                raise CaptchaProviderError(
+                    f"{error_code}: {plan.provider}",
+                    code=error_code,
+                    provider=plan.provider,
+                    detail=detail,
+                )
+
             status = poll_json.get("status")
+            solution = poll_json.get("solution") or {}
+            token = solution.get("gRecaptchaResponse") or solution.get("token")
+            solution_keys = list(solution.keys()) if isinstance(solution, dict) else []
+            debug_logger.log_info(
+                f"[reCAPTCHA {plan.provider}] poll summary: "
+                f"errorId={poll_json.get('errorId')}, "
+                f"status={status}, "
+                f"has_solution={bool(solution)}, "
+                f"solution_keys={solution_keys}, "
+                f"token_len={len(token) if token else 0}"
+            )
             debug_logger.log_info(
                 f"[reCAPTCHA {plan.provider}] poll#{index + 1} status={status} errorId={poll_json.get('errorId')}"
             )
 
             if status == "ready":
-                solution = poll_json.get("solution", {}) or {}
-                token = solution.get("gRecaptchaResponse") or solution.get("token")
-                solution_keys = list(solution.keys()) if isinstance(solution, dict) else []
                 debug_logger.log_info(
                     f"[reCAPTCHA {plan.provider}] ready solution_keys={solution_keys} token_len={len(token) if token else 0}"
                 )

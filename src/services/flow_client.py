@@ -2012,6 +2012,14 @@ class FlowClient:
             return "provider_task_creation_failed"
         if "provider_polling_timeout" in value:
             return "provider_polling_timeout"
+        if "provider_empty_response" in value:
+            return "provider_empty_response"
+        if "provider_non_json_response" in value:
+            return "provider_non_json_response"
+        if "provider_poll_empty_response" in value:
+            return "provider_poll_empty_response"
+        if "provider_poll_non_json_response" in value:
+            return "provider_poll_non_json_response"
         if "public_error_unusual_activity" in value:
             return "upstream_public_error_unusual_activity"
         if "recaptcha evaluation failed" in value:
