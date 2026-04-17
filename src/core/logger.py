@@ -1,6 +1,7 @@
 """Debug logger module for detailed API request/response logging"""
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -18,9 +19,17 @@ class DebugLogger:
         # Create logger
         self.logger = logging.getLogger("debug_logger")
         self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = False
 
         # Remove existing handlers
-        self.logger.handlers.clear()
+        if self.logger.handlers:
+            self.logger.handlers.clear()
+
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
 
         # Create file handler
         file_handler = logging.FileHandler(
@@ -29,19 +38,17 @@ class DebugLogger:
             encoding='utf-8'
         )
         file_handler.setLevel(logging.DEBUG)
-
-        # Create formatter
-        formatter = logging.Formatter(
-            '%(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
         file_handler.setFormatter(formatter)
 
-        # Add handler
-        self.logger.addHandler(file_handler)
+        # Create stream handler for stdout (Render live logs)
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setFormatter(formatter)
 
-        # Prevent propagation to root logger
-        self.logger.propagate = False
+        # Add handlers
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(stream_handler)
+        self.logger.info("Debug logger initialized with file and stdout handlers")
 
     def _mask_token(self, token: str) -> str:
         """Mask token for logging (show first 6 and last 6 characters)"""
