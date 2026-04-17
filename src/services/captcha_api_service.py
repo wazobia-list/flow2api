@@ -2,7 +2,7 @@
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from curl_cffi.requests import AsyncSession
 
@@ -38,6 +38,13 @@ class CaptchaTaskPlan:
     enterprise_enabled: bool
     enterprise_mode: str
     unsupported_reason: Optional[str] = None
+
+
+@dataclass
+class ApiCaptchaSolution:
+    token: str
+    user_agent: Optional[str] = None
+    solution_keys: Tuple[str, ...] = ()
 
 
 def parse_provider_fallback_order(
@@ -195,6 +202,26 @@ def _safe_parse_json_from_text(text: str):
         return None
 
 
+def _sanitize_provider_text_for_log(text: str) -> str:
+    parsed = _safe_parse_json_from_text(text)
+    if not isinstance(parsed, dict):
+        return text
+
+    solution = parsed.get("solution")
+    if isinstance(solution, dict):
+        token = solution.get("gRecaptchaResponse") or solution.get("token")
+        if isinstance(token, str) and token:
+            redacted = f"<redacted token len={len(token)}>"
+            if "gRecaptchaResponse" in solution:
+                solution["gRecaptchaResponse"] = redacted
+            if "token" in solution:
+                solution["token"] = redacted
+    try:
+        return json.dumps(parsed, ensure_ascii=False)
+    except Exception:
+        return text
+
+
 async def solve_with_provider(
     provider: str,
     website_url: str,
@@ -204,7 +231,7 @@ async def solve_with_provider(
     project_id: Optional[str] = None,
     has_fingerprint_context: bool = False,
     using_submission_proxy: bool = False,
-) -> str:
+) -> ApiCaptchaSolution:
     plan = build_captcha_task_plan(
         provider=provider,
         website_url=website_url,
@@ -236,7 +263,7 @@ async def solve_with_provider(
         create_payload = await _read_response_debug_payload(create_resp)
         create_text = create_payload["text"]
         create_content_type = create_payload["content_type"]
-        create_snippet = create_payload["snippet"]
+        create_snippet = _sanitize_provider_text_for_log(create_payload["snippet"])
         debug_logger.log_info(
             f"[reCAPTCHA {plan.provider}] createTask http_status={create_payload['status']} "
             f"content_type={create_content_type} url={create_url} snippet={create_snippet!r}"
@@ -285,7 +312,7 @@ async def solve_with_provider(
             poll_payload = await _read_response_debug_payload(poll_resp)
             poll_text = poll_payload["text"]
             poll_content_type = poll_payload["content_type"]
-            poll_snippet = poll_payload["snippet"]
+            poll_snippet = _sanitize_provider_text_for_log(poll_payload["snippet"])
             debug_logger.log_info(
                 f"[reCAPTCHA {plan.provider}] poll#{index + 1} http_status={poll_payload['status']} "
                 f"content_type={poll_content_type} url={get_url} snippet={poll_snippet!r}"
@@ -309,6 +336,7 @@ async def solve_with_provider(
             status = poll_json.get("status")
             solution = poll_json.get("solution") or {}
             token = solution.get("gRecaptchaResponse") or solution.get("token")
+            provider_user_agent = solution.get("userAgent")
             solution_keys = list(solution.keys()) if isinstance(solution, dict) else []
             debug_logger.log_info(
                 f"[reCAPTCHA {plan.provider}] poll summary: "
@@ -327,8 +355,15 @@ async def solve_with_provider(
                     f"[reCAPTCHA {plan.provider}] ready solution_keys={solution_keys} token_len={len(token) if token else 0}"
                 )
                 if token:
-                    debug_logger.log_info(f"[reCAPTCHA {plan.provider}] token_received=true token_len={len(token)}")
-                    return token
+                    debug_logger.log_info(
+                        f"[reCAPTCHA {plan.provider}] token_received=true token_len={len(token)} "
+                        f"user_agent_len={len(provider_user_agent) if provider_user_agent else 0}"
+                    )
+                    return ApiCaptchaSolution(
+                        token=token,
+                        user_agent=provider_user_agent or None,
+                        solution_keys=tuple(solution_keys),
+                    )
                 raise CaptchaProviderError(
                     f"missing_token: {plan.provider} ready 但未返回 token",
                     code="missing_token",

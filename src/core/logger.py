@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from .config import config
 
 class DebugLogger:
@@ -47,6 +48,34 @@ class DebugLogger:
         if not config.debug_mask_token or len(token) <= 12:
             return token
         return f"{token[:6]}...{token[-6:]}"
+
+    @staticmethod
+    def _redact_proxy(proxy_url: Optional[str]) -> Optional[str]:
+        if not proxy_url:
+            return proxy_url
+        try:
+            parsed = urlsplit(proxy_url)
+            netloc = parsed.netloc or ""
+            if "@" not in netloc:
+                return proxy_url
+            host_part = netloc.rsplit("@", 1)[1]
+            return urlunsplit((parsed.scheme, f"<redacted>@{host_part}", parsed.path, parsed.query, parsed.fragment))
+        except Exception:
+            return proxy_url
+
+    @staticmethod
+    def _redact_recap_tokens(data: Any) -> Any:
+        if isinstance(data, dict):
+            redacted = {}
+            for key, value in data.items():
+                if key == "token" and isinstance(value, str):
+                    redacted[key] = f"<redacted token len={len(value)}>"
+                else:
+                    redacted[key] = DebugLogger._redact_recap_tokens(value)
+            return redacted
+        if isinstance(data, list):
+            return [DebugLogger._redact_recap_tokens(item) for item in data]
+        return data
 
     def _format_timestamp(self) -> str:
         """Format current timestamp"""
@@ -112,8 +141,7 @@ class DebugLogger:
                 auth_key = "Authorization" if "Authorization" in masked_headers else "authorization"
                 auth_value = masked_headers[auth_key]
                 if auth_value.startswith("Bearer "):
-                    token = auth_value[7:]
-                    masked_headers[auth_key] = f"Bearer {self._mask_token(token)}"
+                    masked_headers[auth_key] = "Bearer <redacted>"
 
             # Mask Cookie header (ST token)
             if "Cookie" in masked_headers:
@@ -131,7 +159,7 @@ class DebugLogger:
             if body is not None:
                 self.logger.info("\n📦 Request Body:")
                 if isinstance(body, (dict, list)):
-                    body_str = json.dumps(body, indent=2, ensure_ascii=False)
+                    body_str = json.dumps(self._redact_recap_tokens(body), indent=2, ensure_ascii=False)
                     self.logger.info(body_str)
                 else:
                     self.logger.info(str(body))
@@ -150,7 +178,7 @@ class DebugLogger:
 
             # Proxy
             if proxy:
-                self.logger.info(f"\n🌐 Proxy: {proxy}")
+                self.logger.info(f"\n🌐 Proxy: {self._redact_proxy(proxy)}")
 
             self._write_separator()
             self.logger.info("")  # Empty line
