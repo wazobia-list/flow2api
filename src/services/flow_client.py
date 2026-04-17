@@ -15,6 +15,7 @@ from curl_cffi.requests import AsyncSession
 from ..core.logger import debug_logger
 from ..core.config import config
 from .captcha_api_service import (
+    ApiCaptchaSolution,
     SUPPORTED_API_CAPTCHA_METHODS,
     CaptchaProviderError,
     parse_provider_fallback_order,
@@ -50,6 +51,14 @@ class FlowClient:
         )
         self._last_api_captcha_error_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
             "last_api_captcha_error_ctx",
+            default=None,
+        )
+        self._last_api_captcha_solution_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+            "last_api_captcha_solution_ctx",
+            default=None,
+        )
+        self._last_api_fingerprint_apply_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+            "last_api_fingerprint_apply_ctx",
             default=None,
         )
 
@@ -157,6 +166,125 @@ class FlowClient:
         """清理请求链路绑定的浏览器指纹。"""
         self._set_request_fingerprint(None)
 
+    def _clear_last_api_captcha_solution(self) -> None:
+        self._last_api_captcha_solution_ctx.set(None)
+
+    def _set_last_api_captcha_solution(self, solution: Optional[ApiCaptchaSolution]) -> None:
+        if not solution:
+            self._clear_last_api_captcha_solution()
+            return
+        self._last_api_captcha_solution_ctx.set({
+            "token_len": len(solution.token) if solution.token else 0,
+            "user_agent": solution.user_agent or None,
+            "solution_keys": tuple(solution.solution_keys or ()),
+        })
+
+    def _get_last_api_captcha_solution(self) -> Optional[Dict[str, Any]]:
+        payload = self._last_api_captcha_solution_ctx.get()
+        if not isinstance(payload, dict) or not payload:
+            return None
+        return dict(payload)
+
+    @staticmethod
+    def _contains_recaptcha_token_body(payload: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        client_context = payload.get("clientContext")
+        if isinstance(client_context, dict):
+            recaptcha_context = client_context.get("recaptchaContext")
+            if isinstance(recaptcha_context, dict) and recaptcha_context.get("token"):
+                return True
+        requests = payload.get("requests")
+        if isinstance(requests, list):
+            for req in requests:
+                if isinstance(req, dict):
+                    nested_context = req.get("clientContext")
+                    if isinstance(nested_context, dict):
+                        nested_recaptcha = nested_context.get("recaptchaContext")
+                        if isinstance(nested_recaptcha, dict) and nested_recaptcha.get("token"):
+                            return True
+        return False
+
+    @staticmethod
+    def _redact_recaptcha_token_body(payload: Any) -> Any:
+        if isinstance(payload, dict):
+            redacted = {}
+            for key, value in payload.items():
+                if key == "token" and isinstance(value, str):
+                    redacted[key] = f"<redacted token len={len(value)}>"
+                else:
+                    redacted[key] = FlowClient._redact_recaptcha_token_body(value)
+            return redacted
+        if isinstance(payload, list):
+            return [FlowClient._redact_recaptcha_token_body(item) for item in payload]
+        return payload
+
+    @staticmethod
+    def _sanitize_proxy_for_log(proxy_url: Optional[str]) -> Optional[str]:
+        if not proxy_url or "@" not in proxy_url:
+            return proxy_url
+        scheme_sep = "://"
+        if scheme_sep not in proxy_url:
+            return proxy_url
+        scheme, rest = proxy_url.split(scheme_sep, 1)
+        if "@" not in rest:
+            return proxy_url
+        _, host = rest.rsplit("@", 1)
+        return f"{scheme}{scheme_sep}<redacted>@{host}"
+
+    def _record_api_fingerprint_apply(self, applied: bool, stripped_count: int) -> None:
+        self._last_api_fingerprint_apply_ctx.set(
+            {"applied": bool(applied), "client_hints_stripped": int(stripped_count)}
+        )
+
+    def _get_last_api_fingerprint_apply(self) -> Dict[str, Any]:
+        payload = self._last_api_fingerprint_apply_ctx.get()
+        if not isinstance(payload, dict):
+            return {"applied": False, "client_hints_stripped": 0}
+        return {
+            "applied": bool(payload.get("applied")),
+            "client_hints_stripped": int(payload.get("client_hints_stripped") or 0),
+        }
+
+    def _apply_api_captcha_submission_fingerprint(
+        self,
+        headers: Dict[str, str],
+    ) -> Dict[str, str]:
+        normalized = dict(headers or {})
+        solution = self._get_last_api_captcha_solution() or {}
+        provider_ua = solution.get("user_agent") if isinstance(solution, dict) else None
+        if provider_ua:
+            normalized["User-Agent"] = provider_ua
+
+        remove_keys = (
+            "sec-ch-ua",
+            "sec-ch-ua-mobile",
+            "sec-ch-ua-platform",
+            "sec-ch-ua-full-version",
+            "sec-ch-ua-platform-version",
+            "sec-ch-ua-model",
+            "sec-ch-ua-arch",
+            "sec-ch-ua-bitness",
+            "sec-ch-ua-full-version-list",
+            "x-client-data",
+        )
+        lowered = {key.lower(): key for key in list(normalized.keys())}
+        stripped_count = 0
+        for key in remove_keys:
+            existing = lowered.get(key)
+            if existing and existing in normalized:
+                normalized.pop(existing, None)
+                stripped_count += 1
+
+        final_ua = normalized.get("User-Agent", "")
+        self._record_api_fingerprint_apply(applied=True, stripped_count=stripped_count)
+        debug_logger.log_info(
+            f"[reCAPTCHA submit] api_captcha_ua_applied={bool(provider_ua)} "
+            f"client_hints_stripped={stripped_count} "
+            f"user_agent_prefix={final_ua[:80] if final_ua else ''}"
+        )
+        return normalized
+
     async def _make_request(
         self,
         method: str,
@@ -248,18 +376,28 @@ class FlowClient:
         for key, value in self._default_client_headers.items():
             headers.setdefault(key, value)
 
+        should_apply_api_fingerprint = (
+            config.captcha_method in SUPPORTED_API_CAPTCHA_METHODS
+            or self._get_last_api_captcha_solution() is not None
+        ) and self._contains_recaptcha_token_body(json_data)
+        if should_apply_api_fingerprint:
+            headers = self._apply_api_captcha_submission_fingerprint(headers)
+        else:
+            self._record_api_fingerprint_apply(applied=False, stripped_count=0)
+
         # Log request
         if config.debug_enabled:
             if isinstance(fingerprint, dict):
-                proxy_for_log = proxy_url if proxy_url else "direct"
+                proxy_for_log = self._sanitize_proxy_for_log(proxy_url) if proxy_url else "direct"
                 debug_logger.log_info(
                     f"[FINGERPRINT] 使用打码浏览器指纹提交请求: UA={headers.get('User-Agent', '')[:120]}, proxy={proxy_for_log}"
                 )
+            logged_body = self._redact_recaptcha_token_body(json_data) if self._contains_recaptcha_token_body(json_data) else json_data
             debug_logger.log_request(
                 method=method,
                 url=url,
                 headers=headers,
-                body=json_data,
+                body=logged_body,
                 proxy=proxy_url
             )
 
@@ -319,8 +457,25 @@ class FlowClient:
                     
                     # 失败时输出请求体和错误内容到控制台
                     debug_logger.log_error(f"[API FAILED] URL: {url}")
-                    debug_logger.log_error(f"[API FAILED] Request Body: {json_data}")
+                    safe_body = self._redact_recaptcha_token_body(json_data) if self._contains_recaptcha_token_body(json_data) else json_data
+                    debug_logger.log_error(f"[API FAILED] Request Body: {safe_body}")
                     debug_logger.log_error(f"[API FAILED] Response: {response.text}")
+
+                    response_text_lower = (response.text or "").lower()
+                    if (
+                        "public_error_unusual_activity" in response_text_lower
+                        or "recaptcha evaluation failed" in response_text_lower
+                    ):
+                        last_solution = self._get_last_api_captcha_solution() or {}
+                        fingerprint_apply = self._get_last_api_fingerprint_apply()
+                        provider_ua = last_solution.get("user_agent") if isinstance(last_solution, dict) else None
+                        debug_logger.log_warning(
+                            f"[reCAPTCHA submit] upstream_reject method={config.captcha_method} "
+                            f"has_provider_ua={bool(provider_ua)} "
+                            f"fingerprint_helper_applied={bool(fingerprint_apply.get('applied'))} "
+                            f"client_hints_stripped={int(fingerprint_apply.get('client_hints_stripped') or 0)} "
+                            f"submission_proxy={bool(proxy_url)}"
+                        )
                     
                     raise Exception(error_reason)
 
@@ -333,7 +488,8 @@ class FlowClient:
             # 如果不是我们自己抛出的异常，记录日志
             if "HTTP Error" not in error_msg and not any(x in error_msg for x in ["PUBLIC_ERROR", "INVALID_ARGUMENT"]):
                 debug_logger.log_error(f"[API FAILED] URL: {url}")
-                debug_logger.log_error(f"[API FAILED] Request Body: {json_data}")
+                safe_body = self._redact_recaptcha_token_body(json_data) if self._contains_recaptcha_token_body(json_data) else json_data
+                debug_logger.log_error(f"[API FAILED] Request Body: {safe_body}")
                 debug_logger.log_error(f"[API FAILED] Exception: {error_msg}")
 
             if self._should_fallback_to_urllib(error_msg):
@@ -2414,6 +2570,7 @@ class FlowClient:
         """
         captcha_method = config.captcha_method
         self._clear_last_api_captcha_error()
+        self._clear_last_api_captcha_solution()
         debug_logger.log_info(f"[reCAPTCHA] 开始获取 token: method={captcha_method}, project_id={project_id}, action={action}")
 
         # 内置浏览器打码 (nodriver)
@@ -2425,7 +2582,7 @@ class FlowClient:
                 service = await BrowserCaptchaService.get_instance(self.db)
                 debug_logger.log_info(f"[reCAPTCHA] 获取服务实例成功，准备调用 get_token")
                 token = await service.get_token(project_id, action)
-                debug_logger.log_info(f"[reCAPTCHA] get_token 返回: {token[:50] if token else None}...")
+                debug_logger.log_info(f"[reCAPTCHA] get_token 返回: token_len={len(token) if token else 0}")
                 fingerprint = service.get_last_fingerprint() if token else None
                 self._set_request_fingerprint(fingerprint if token else None)
                 return token, None
@@ -2502,6 +2659,7 @@ class FlowClient:
                 token = await self._get_api_captcha_token(provider, project_id, action)
                 return token, None
             except CaptchaProviderError as e:
+                self._clear_last_api_captcha_solution()
                 self._set_last_api_captcha_error(e, provider=provider)
                 return None, None
         else:
@@ -2520,7 +2678,7 @@ class FlowClient:
         website_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
         website_url = f"https://labs.google/fx/tools/flow/project/{project_id}"
         try:
-            token = await solve_with_provider(
+            solution = await solve_with_provider(
                 provider=method,
                 website_url=website_url,
                 website_key=website_key,
@@ -2530,8 +2688,10 @@ class FlowClient:
                 has_fingerprint_context=bool(self.get_request_fingerprint()),
                 using_submission_proxy=bool(await self.proxy_manager.get_request_proxy_url()) if self.proxy_manager else False,
             )
-            return token
+            self._set_last_api_captcha_solution(solution)
+            return solution.token
         except CaptchaProviderError as e:
+            self._clear_last_api_captcha_solution()
             debug_logger.log_error(f"[reCAPTCHA {method}] code={getattr(e, 'code', 'provider_error')} detail={e}")
             if self._advance_api_provider(config.captcha_method, project_id, action):
                 next_provider = self._get_current_api_provider(config.captcha_method, project_id, action)
@@ -2540,6 +2700,7 @@ class FlowClient:
             self._set_last_api_captcha_error(e, provider=method)
             raise
         except Exception as e:
+            self._clear_last_api_captcha_solution()
             self._set_last_api_captcha_error(e, provider=method)
             debug_logger.log_error(f"[reCAPTCHA {method}] unexpected_error: {str(e)}")
             return None

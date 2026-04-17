@@ -1,13 +1,16 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from src.core.config import config
 from src.core.database import Database
 from src.services.captcha_api_service import (
+    ApiCaptchaSolution,
     CaptchaProviderError,
     build_captcha_task_plan,
     parse_provider_fallback_order,
     resolve_enterprise_enabled,
+    solve_with_provider,
 )
 from src.services.flow_client import FlowClient
 
@@ -210,6 +213,102 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         client._set_last_api_captcha_error(error, provider="yescaptcha")
         built = client._build_recaptcha_failure_exception()
         self.assertIn("provider_unsupported_enterprise", str(built))
+
+    async def test_api_captcha_solution_preserves_user_agent(self):
+        original_key = config.yescaptcha_api_key
+        try:
+            config.set_yescaptcha_api_key("dummy-key")
+
+            class _FakeResponse:
+                def __init__(self, payload):
+                    self.status_code = 200
+                    self.headers = {"content-type": "application/json"}
+                    self._payload = payload
+
+                async def text(self):
+                    return self._payload
+
+            class _FakeSession:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return False
+
+                async def post(self, url, json=None, timeout=None):
+                    if url.endswith("/createTask"):
+                        return _FakeResponse('{"errorId":0,"taskId":12345,"status":"processing"}')
+                    return _FakeResponse(
+                        '{"errorId":0,"status":"ready","solution":{"gRecaptchaResponse":"token-abc","userAgent":"Mozilla/5.0 Test UA"}}'
+                    )
+
+            with patch("src.services.captcha_api_service.AsyncSession", return_value=_FakeSession()):
+                solution = await solve_with_provider(
+                    provider="yescaptcha",
+                    website_url="https://labs.google/fx/tools/flow/project/project-1",
+                    website_key="site-key",
+                    action="IMAGE_GENERATION",
+                    enterprise_required=True,
+                    project_id="project-1",
+                )
+            self.assertEqual(solution.token, "token-abc")
+            self.assertEqual(solution.user_agent, "Mozilla/5.0 Test UA")
+            self.assertIn("userAgent", solution.solution_keys)
+            self.assertIn("gRecaptchaResponse", solution.solution_keys)
+        finally:
+            config.set_yescaptcha_api_key(original_key)
+
+    def test_apply_api_captcha_submission_fingerprint_uses_provider_user_agent(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        client._set_last_api_captcha_solution(
+            ApiCaptchaSolution(token="token-abc", user_agent="Mozilla/5.0 Provider UA", solution_keys=("gRecaptchaResponse", "userAgent"))
+        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 Desktop UA",
+            "sec-ch-ua-mobile": "?1",
+            "sec-ch-ua-platform": "\"Android\"",
+            "x-client-data": "test-client-data",
+        }
+        result = client._apply_api_captcha_submission_fingerprint(headers)
+        self.assertEqual(result.get("User-Agent"), "Mozilla/5.0 Provider UA")
+        self.assertNotIn("sec-ch-ua-mobile", result)
+        self.assertNotIn("sec-ch-ua-platform", result)
+        self.assertNotIn("x-client-data", result)
+
+    def test_apply_api_captcha_submission_fingerprint_without_provider_user_agent_strips_conflicting_hints(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        client._set_last_api_captcha_solution(
+            ApiCaptchaSolution(token="token-abc", user_agent=None, solution_keys=("gRecaptchaResponse",))
+        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 Desktop UA",
+            "sec-ch-ua-mobile": "?1",
+            "sec-ch-ua-platform": "\"Android\"",
+            "x-client-data": "test-client-data",
+        }
+        result = client._apply_api_captcha_submission_fingerprint(headers)
+        self.assertEqual(result.get("User-Agent"), "Mozilla/5.0 Desktop UA")
+        self.assertNotIn("sec-ch-ua-mobile", result)
+        self.assertNotIn("sec-ch-ua-platform", result)
+        self.assertNotIn("x-client-data", result)
+
+    def test_request_body_redacts_recaptcha_token(self):
+        payload = {
+            "clientContext": {
+                "recaptchaContext": {
+                    "token": "raw-token-value"
+                }
+            }
+        }
+        redacted = FlowClient._redact_recaptcha_token_body(payload)
+        self.assertEqual(redacted["clientContext"]["recaptchaContext"]["token"], "<redacted token len=15>")
+        self.assertNotIn("raw-token-value", str(redacted))
+
+    def test_proxy_logging_redacts_credentials(self):
+        proxy = "http://user:pass@example.com:8080"
+        redacted = FlowClient._sanitize_proxy_for_log(proxy)
+        self.assertEqual(redacted, "http://<redacted>@example.com:8080")
+        self.assertNotIn("user:pass", redacted)
 
 
 if __name__ == "__main__":
