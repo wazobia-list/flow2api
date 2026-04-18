@@ -1,9 +1,10 @@
 """Shared API captcha provider utilities and solver."""
 import asyncio
 import json
-from dataclasses import dataclass
+import secrets
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from curl_cffi.requests import AsyncSession
 
@@ -45,7 +46,8 @@ class CaptchaTaskPlan:
 class ApiCaptchaSolution:
     token: str
     user_agent: Optional[str] = None
-    solution_keys: Tuple[str, ...] = ()
+    solution_keys: Tuple[str, ...] = field(default_factory=tuple)
+    sticky_proxy_url: Optional[str] = None
 
 
 def parse_provider_fallback_order(
@@ -126,6 +128,35 @@ def parse_proxy_for_captcha_task(proxy_url: str) -> Optional[Dict[str, Any]]:
         return proxy_task
     except Exception:
         return None
+
+
+def make_sticky_proxy_url(proxy_url: str, session_id: Optional[str] = None) -> Optional[str]:
+    """Inject a sticky-session suffix into a rotating proxy URL username.
+
+    Converts: http://user:pass@geo.iproyal.com:12321
+    Into:     http://user_session-abc123:pass@geo.iproyal.com:12321
+
+    This ensures the captcha solve and token submission use the same exit IP.
+    """
+    if not proxy_url or not proxy_url.strip():
+        return None
+    try:
+        parsed = urlparse(proxy_url.strip())
+        if not parsed.hostname or not parsed.port:
+            return proxy_url
+        username = parsed.username or ""
+        password = parsed.password or ""
+        if "_session-" in username or "-session-" in username:
+            return proxy_url
+        sid = session_id or secrets.token_hex(5)
+        new_username = f"{username}_session-{sid}"
+        netloc = (
+            f"{new_username}:{password}@{parsed.hostname}:{parsed.port}"
+            if password else f"{new_username}@{parsed.hostname}:{parsed.port}"
+        )
+        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+    except Exception:
+        return proxy_url
 
 
 def build_captcha_task_plan(
@@ -287,19 +318,24 @@ async def solve_with_provider(
     if plan.provider == "capsolver" and plan.enterprise_enabled:
         task["isEnterprise"] = True
 
+    sticky_proxy_url: Optional[str] = None
     if submission_proxy_url:
-        proxy_fields = parse_proxy_for_captcha_task(submission_proxy_url)
-        if proxy_fields:
-            task.update(proxy_fields)
-            debug_logger.log_info(
-                f"[reCAPTCHA {provider}] using submission proxy for solve: "
-                f"proxyType={proxy_fields['proxyType']} proxyAddress={proxy_fields['proxyAddress']}"
-            )
-        else:
-            debug_logger.log_warning(
-                f"[reCAPTCHA {provider}] submission_proxy_url provided but could not be parsed, "
-                f"falling back to proxyless solve — token may be rejected"
-            )
+        sticky_url = make_sticky_proxy_url(submission_proxy_url)
+        if sticky_url:
+            sticky_proxy_url = sticky_url
+            proxy_fields = parse_proxy_for_captcha_task(sticky_url)
+            if proxy_fields:
+                task.update(proxy_fields)
+                debug_logger.log_info(
+                    f"[reCAPTCHA {provider}] using sticky proxy for solve: "
+                    f"proxyType={proxy_fields['proxyType']} proxyAddress={proxy_fields['proxyAddress']} "
+                    f"username_suffix=_session-* (sticky session bound)"
+                )
+            else:
+                debug_logger.log_warning(
+                    f"[reCAPTCHA {provider}] sticky proxy could not be parsed, "
+                    f"falling back to proxyless solve — token may be rejected"
+                )
 
     create_url = f"{plan.base_url}/createTask"
     get_url = f"{plan.base_url}/getTaskResult"
@@ -409,6 +445,7 @@ async def solve_with_provider(
                         token=token,
                         user_agent=provider_user_agent or None,
                         solution_keys=tuple(solution_keys),
+                        sticky_proxy_url=sticky_proxy_url,
                     )
                 raise CaptchaProviderError(
                     f"missing_token: {plan.provider} ready 但未返回 token",
