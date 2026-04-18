@@ -23,7 +23,11 @@ class DebugLogger:
 
         # Remove existing handlers
         if self.logger.handlers:
-            self.logger.handlers.clear()
+            for handler in list(self.logger.handlers):
+                try:
+                    handler.close()
+                finally:
+                    self.logger.removeHandler(handler)
 
         # Create formatter
         formatter = logging.Formatter(
@@ -42,6 +46,17 @@ class DebugLogger:
 
         # Add handler
         self.logger.addHandler(file_handler)
+
+    def _ensure_log_file_ready(self):
+        """Ensure logger handler points to an existing logs.txt file."""
+        if not getattr(self, "logger", None):
+            self._setup_logger()
+            return
+
+        if self.log_file.exists():
+            return
+
+        self._setup_logger()
 
     def _mask_token(self, token: str) -> str:
         """Mask token for logging (show first 6 and last 6 characters)"""
@@ -126,6 +141,7 @@ class DebugLogger:
             return
 
         try:
+            self._ensure_log_file_ready()
             self._write_separator()
             self.logger.info(f"🔵 [REQUEST] {self._format_timestamp()}")
             self._write_separator("-")
@@ -199,6 +215,7 @@ class DebugLogger:
             return
 
         try:
+            self._ensure_log_file_ready()
             self._write_separator()
             self.logger.info(f"🟢 [RESPONSE] {self._format_timestamp()}")
             self._write_separator("-")
@@ -258,6 +275,7 @@ class DebugLogger:
             return
 
         try:
+            self._ensure_log_file_ready()
             self._write_separator()
             self.logger.info(f"🔴 [ERROR] {self._format_timestamp()}")
             self._write_separator("-")
@@ -292,6 +310,7 @@ class DebugLogger:
         if not config.debug_enabled:
             return
         try:
+            self._ensure_log_file_ready()
             self.logger.info(f"ℹ️  [{self._format_timestamp()}] {message}")
         except Exception as e:
             self.logger.error(f"Error logging info: {e}")
@@ -301,6 +320,7 @@ class DebugLogger:
         if not config.debug_enabled:
             return
         try:
+            self._ensure_log_file_ready()
             self.logger.warning(f"⚠️  [{self._format_timestamp()}] {message}")
         except Exception as e:
             self.logger.error(f"Error logging warning: {e}")

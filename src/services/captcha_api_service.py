@@ -3,6 +3,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession
 
@@ -103,11 +104,36 @@ def _provider_credentials(provider: str) -> tuple[str, str]:
     return "", ""
 
 
+def parse_proxy_for_captcha_task(proxy_url: str) -> Optional[Dict[str, Any]]:
+    """Parse proxy URL into captcha task fields."""
+    if not proxy_url:
+        return None
+    try:
+        parsed = urlparse(proxy_url.strip())
+        proxy_type = "socks5" if (parsed.scheme or "").startswith("socks5") else "http"
+        if not parsed.hostname or not parsed.port:
+            return None
+
+        proxy_task: Dict[str, Any] = {
+            "proxyType": proxy_type,
+            "proxyAddress": parsed.hostname,
+            "proxyPort": parsed.port,
+        }
+        if parsed.username:
+            proxy_task["proxyLogin"] = parsed.username
+        if parsed.password:
+            proxy_task["proxyPassword"] = parsed.password
+        return proxy_task
+    except Exception:
+        return None
+
+
 def build_captcha_task_plan(
     provider: str,
     website_url: str,
     enterprise_required: bool,
     action: str,
+    use_proxy: bool = False,
 ) -> CaptchaTaskPlan:
     provider = (provider or "").strip().lower()
     if provider not in SUPPORTED_API_CAPTCHA_METHODS:
@@ -140,11 +166,14 @@ def build_captcha_task_plan(
         else:
             task_type = "RecaptchaV3TaskProxylessM1"
     elif provider == "capmonster":
-        task_type = "RecaptchaV3TaskProxyless"
+        task_type = "RecaptchaV3Task" if use_proxy else "RecaptchaV3TaskProxyless"
     elif provider == "ezcaptcha":
-        task_type = "ReCaptchaV3TaskProxylessS9"
+        task_type = "ReCaptchaV3TaskS9" if use_proxy else "ReCaptchaV3TaskProxylessS9"
     elif provider == "capsolver":
-        task_type = "ReCaptchaV3EnterpriseTaskProxyLess" if enterprise_enabled else "ReCaptchaV3TaskProxyLess"
+        if enterprise_enabled:
+            task_type = "ReCaptchaV3EnterpriseTask" if use_proxy else "ReCaptchaV3EnterpriseTaskProxyLess"
+        else:
+            task_type = "ReCaptchaV3Task" if use_proxy else "ReCaptchaV3TaskProxyLess"
 
     plan = CaptchaTaskPlan(
         provider=provider,
@@ -231,12 +260,15 @@ async def solve_with_provider(
     project_id: Optional[str] = None,
     has_fingerprint_context: bool = False,
     using_submission_proxy: bool = False,
+    submission_proxy_url: Optional[str] = None,
 ) -> ApiCaptchaSolution:
+    use_proxy = bool(submission_proxy_url)
     plan = build_captcha_task_plan(
         provider=provider,
         website_url=website_url,
         enterprise_required=enterprise_required,
         action=action,
+        use_proxy=use_proxy,
     )
 
     if plan.unsupported_reason:
@@ -254,6 +286,20 @@ async def solve_with_provider(
     }
     if plan.provider == "capsolver" and plan.enterprise_enabled:
         task["isEnterprise"] = True
+
+    if submission_proxy_url:
+        proxy_fields = parse_proxy_for_captcha_task(submission_proxy_url)
+        if proxy_fields:
+            task.update(proxy_fields)
+            debug_logger.log_info(
+                f"[reCAPTCHA {provider}] using submission proxy for solve: "
+                f"proxyType={proxy_fields['proxyType']} proxyAddress={proxy_fields['proxyAddress']}"
+            )
+        else:
+            debug_logger.log_warning(
+                f"[reCAPTCHA {provider}] submission_proxy_url provided but could not be parsed, "
+                f"falling back to proxyless solve — token may be rejected"
+            )
 
     create_url = f"{plan.base_url}/createTask"
     get_url = f"{plan.base_url}/getTaskResult"
