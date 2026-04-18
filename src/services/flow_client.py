@@ -269,6 +269,23 @@ class FlowClient:
             {"applied": bool(applied), "client_hints_stripped": int(stripped_count)}
         )
 
+    @staticmethod
+    def _extract_session_id_from_payload(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+        client_context = payload.get("clientContext")
+        if isinstance(client_context, dict) and client_context.get("sessionId"):
+            return str(client_context.get("sessionId"))
+        requests = payload.get("requests")
+        if isinstance(requests, list):
+            for request_item in requests:
+                if not isinstance(request_item, dict):
+                    continue
+                nested_context = request_item.get("clientContext")
+                if isinstance(nested_context, dict) and nested_context.get("sessionId"):
+                    return str(nested_context.get("sessionId"))
+        return None
+
     def _get_last_api_fingerprint_apply(self) -> Dict[str, Any]:
         payload = self._last_api_fingerprint_apply_ctx.get()
         if not isinstance(payload, dict):
@@ -299,6 +316,13 @@ class FlowClient:
             "sec-ch-ua-bitness",
             "sec-ch-ua-full-version-list",
             "x-client-data",
+            "x-browser-channel",
+            "x-browser-copyright",
+            "x-browser-validation",
+            "x-browser-year",
+            "sec-fetch-dest",
+            "sec-fetch-mode",
+            "sec-fetch-site",
         )
         lowered = {key.lower(): key for key in list(normalized.keys())}
         stripped_count = 0
@@ -659,12 +683,19 @@ class FlowClient:
                         last_solution = self._get_last_api_captcha_solution() or {}
                         fingerprint_apply = self._get_last_api_fingerprint_apply()
                         provider_ua = last_solution.get("user_agent") if isinstance(last_solution, dict) else None
+                        session_id = self._extract_session_id_from_payload(json_data) or ""
+                        stripped_count = int(fingerprint_apply.get("client_hints_stripped") or 0)
                         debug_logger.log_warning(
                             f"[reCAPTCHA submit] upstream_reject method={config.captcha_method} "
                             f"has_provider_ua={bool(provider_ua)} "
                             f"fingerprint_helper_applied={bool(fingerprint_apply.get('applied'))} "
-                            f"client_hints_stripped={int(fingerprint_apply.get('client_hints_stripped') or 0)} "
+                            f"client_hints_stripped={stripped_count} "
                             f"submission_proxy={bool(proxy_url)}"
+                        )
+                        debug_logger.log_warning(
+                            f"[Submit Reject Context] session_id_prefix={session_id[:12]} method={config.captcha_method} "
+                            f"identity_headers_stripped={stripped_count > 0} "
+                            f"provider_ua_applied={bool(provider_ua)} proxy_in_use={bool(proxy_url)}"
                         )
                     
                     raise Exception(error_reason)
@@ -1589,6 +1620,7 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
+        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
@@ -1623,7 +1655,6 @@ class FlowClient:
                 if should_retry:
                     continue
                 raise last_error
-            session_id = self._generate_session_id()
             scene_id = str(uuid.uuid4())
             client_context = {
                 "recaptchaContext": {
@@ -1713,6 +1744,7 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
+        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
@@ -1747,7 +1779,6 @@ class FlowClient:
                 if should_retry:
                     continue
                 raise last_error
-            session_id = self._generate_session_id()
             batch_id = str(uuid.uuid4())
             scene_id = str(uuid.uuid4())
 
@@ -1846,6 +1877,7 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
+        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
@@ -1880,7 +1912,6 @@ class FlowClient:
                 if should_retry:
                     continue
                 raise last_error
-            session_id = self._generate_session_id()
             scene_id = str(uuid.uuid4())
             client_context = {
                 "recaptchaContext": {
@@ -1977,6 +2008,7 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
+        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
@@ -2011,7 +2043,6 @@ class FlowClient:
                 if should_retry:
                     continue
                 raise last_error
-            session_id = self._generate_session_id()
             scene_id = str(uuid.uuid4())
             client_context = {
                 "recaptchaContext": {
@@ -2105,6 +2136,7 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
+        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
             launch_gate_acquired = False
@@ -2138,7 +2170,6 @@ class FlowClient:
                 if should_retry:
                     continue
                 raise last_error
-            session_id = self._generate_session_id()
             scene_id = str(uuid.uuid4())
 
             json_data = {
