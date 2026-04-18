@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 from src.core.config import config
 from src.core.database import Database
@@ -257,6 +257,73 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("gRecaptchaResponse", solution.solution_keys)
         finally:
             config.set_yescaptcha_api_key(original_key)
+
+    async def test_session_id_is_stable_across_retries_for_video_generation(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        config.set_flow_max_retries(2)
+
+        client._acquire_video_launch_gate = AsyncMock(return_value=(True, 0, 0))
+        client._release_video_launch_gate = AsyncMock()
+        client._get_recaptcha_token = AsyncMock(
+            side_effect=[("token-1", "browser-1"), ("token-2", "browser-2")]
+        )
+        client._notify_browser_captcha_request_finished = AsyncMock()
+        client._handle_retryable_generation_error = AsyncMock(return_value=True)
+        client._generate_session_id = Mock(return_value="stable-session-id")
+
+        submit_payloads = []
+
+        async def _fake_make_request(**kwargs):
+            submit_payloads.append(kwargs["json_data"])
+            if len(submit_payloads) == 1:
+                raise Exception("PUBLIC_ERROR_UNUSUAL_ACTIVITY")
+            return {"operations": [{"operation": {"name": "task-1"}}]}
+
+        client._make_request = AsyncMock(side_effect=_fake_make_request)
+
+        result = await client.generate_video_text(
+            at="at-token",
+            project_id="project-1",
+            prompt="test prompt",
+            model_key="veo_3_1_t2v_fast",
+            aspect_ratio="VIDEO_ASPECT_RATIO_LANDSCAPE",
+        )
+
+        self.assertIn("operations", result)
+        self.assertEqual(len(submit_payloads), 2)
+        first_session_id = submit_payloads[0]["clientContext"]["sessionId"]
+        second_session_id = submit_payloads[1]["clientContext"]["sessionId"]
+        self.assertEqual(first_session_id, "stable-session-id")
+        self.assertEqual(second_session_id, "stable-session-id")
+        client._generate_session_id.assert_called_once()
+        self.assertEqual(client._get_recaptcha_token.await_count, 2)
+        client._handle_retryable_generation_error.assert_awaited_once()
+        client._notify_browser_captcha_request_finished.assert_has_awaits(
+            [call("browser-1"), call("browser-2")]
+        )
+
+    def test_api_captcha_submission_fingerprint_strips_identity_headers(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        client._set_last_api_captcha_solution(
+            ApiCaptchaSolution(token="token-abc", user_agent="Provider UA", solution_keys=("token", "userAgent"))
+        )
+        headers = {
+            "User-Agent": "Original UA",
+            "sec-ch-ua": "\"Chromium\";v=\"131\"",
+            "sec-ch-ua-mobile": "?1",
+            "x-client-data": "abc123",
+            "x-browser-channel": "stable",
+            "sec-fetch-site": "cross-site",
+        }
+
+        normalized = client._apply_api_captcha_submission_fingerprint(headers)
+
+        self.assertEqual(normalized.get("User-Agent"), "Provider UA")
+        self.assertNotIn("sec-ch-ua", normalized)
+        self.assertNotIn("sec-ch-ua-mobile", normalized)
+        self.assertNotIn("x-client-data", normalized)
+        self.assertNotIn("x-browser-channel", normalized)
+        self.assertNotIn("sec-fetch-site", normalized)
 
     async def test_should_use_remote_browser_submit_true_for_recaptcha_flow_request(self):
         client = FlowClient(proxy_manager=None, db=self.db)
