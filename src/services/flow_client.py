@@ -2928,6 +2928,12 @@ class FlowClient:
                 submission_proxy_url=submission_proxy_url,
             )
             self._set_last_api_captcha_solution(solution)
+            if solution.sticky_proxy_url:
+                self._set_request_fingerprint({"proxy_url": solution.sticky_proxy_url})
+                debug_logger.log_info(
+                    f"[reCAPTCHA {method}] sticky proxy set for submission — "
+                    f"solve and submit will share the same exit IP"
+                )
             return solution.token
         except CaptchaProviderError as e:
             self._clear_last_api_captcha_solution()
