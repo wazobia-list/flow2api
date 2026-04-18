@@ -131,31 +131,69 @@ def parse_proxy_for_captcha_task(proxy_url: str) -> Optional[Dict[str, Any]]:
 
 
 def make_sticky_proxy_url(proxy_url: str, session_id: Optional[str] = None) -> Optional[str]:
-    """Inject a sticky-session suffix into a rotating proxy URL username.
-
-    Converts: http://user:pass@geo.iproyal.com:12321
-    Into:     http://user_session-abc123:pass@geo.iproyal.com:12321
-
-    This ensures the captcha solve and token submission use the same exit IP.
+    """Inject a sticky-session suffix into a rotating IPRoyal proxy URL.
+ 
+    IPRoyal sticky session credentials have this structure:
+        http://USERNAME:BASEPASSWORD_country-us_session-ID_lifetime-30m@geo.iproyal.com:12321
+ 
+    The session parameters are appended to the PASSWORD, NOT the username.
+    Our earlier implementation incorrectly modified the username, which caused
+    IPRoyal to return 407 Proxy Authentication Required.
+ 
+    Converts:
+        http://user:pass@geo.iproyal.com:12321
+    Into:
+        http://user:pass_session-abc12345_lifetime-30m@geo.iproyal.com:12321
+ 
+    If the URL already contains a session (detected by '_session-' in the
+    password or username) it is returned unchanged to avoid double-injection.
+ 
+    Args:
+        proxy_url: The rotating proxy URL from config.
+        session_id: Optional token; an 8-char random hex string is generated
+                    when omitted.
+ 
+    Returns:
+        Sticky URL string, original URL if already sticky, or None for empty input.
     """
     if not proxy_url or not proxy_url.strip():
         return None
     try:
+        from urllib.parse import quote as _quote
         parsed = urlparse(proxy_url.strip())
         if not parsed.hostname or not parsed.port:
             return proxy_url
+ 
         username = parsed.username or ""
         password = parsed.password or ""
-        if "_session-" in username or "-session-" in username:
+ 
+        # Already sticky — don't double-inject
+        if "_session-" in password or "_session-" in username:
+            debug_logger.log_info(
+                "[StickyProxy] URL already contains _session- — reusing existing sticky session"
+            )
             return proxy_url
-        sid = session_id or secrets.token_hex(5)
-        new_username = f"{username}_session-{sid}"
-        netloc = (
-            f"{new_username}:{password}@{parsed.hostname}:{parsed.port}"
-            if password else f"{new_username}@{parsed.hostname}:{parsed.port}"
+ 
+        sid = session_id or secrets.token_hex(4)  # 8 hex chars, safe for IPRoyal
+        new_password = f"{password}_session-{sid}_lifetime-30m"
+ 
+        # Re-encode user/pass so special chars don't break the URL.
+        # safe_chars covers everything IPRoyal passwords legally contain.
+        safe_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-."
+        encoded_user = _quote(username, safe=safe_chars)
+        encoded_pass = _quote(new_password, safe=safe_chars)
+        netloc = f"{encoded_user}:{encoded_pass}@{parsed.hostname}:{parsed.port}"
+ 
+        sticky_url = urlunparse((
+            parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
+        ))
+        debug_logger.log_info(
+            f"[StickyProxy] Generated sticky URL: session={sid} lifetime=30m "
+            f"host={parsed.hostname}:{parsed.port}"
         )
-        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-    except Exception:
+        return sticky_url
+    except Exception as exc:
+        debug_logger.log_warning(f"[StickyProxy] Failed to build sticky URL: {exc} — using original")
         return proxy_url
 
 
