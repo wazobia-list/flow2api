@@ -2914,6 +2914,7 @@ class FlowClient:
         """
         website_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
         website_url = f"https://labs.google/fx/tools/flow/project/{project_id}"
+        submission_proxy_url = await self.proxy_manager.get_request_proxy_url() if self.proxy_manager else None
         try:
             solution = await solve_with_provider(
                 provider=method,
@@ -2923,7 +2924,8 @@ class FlowClient:
                 enterprise_required=True,
                 project_id=project_id,
                 has_fingerprint_context=bool(self.get_request_fingerprint()),
-                using_submission_proxy=bool(await self.proxy_manager.get_request_proxy_url()) if self.proxy_manager else False,
+                using_submission_proxy=bool(submission_proxy_url),
+                submission_proxy_url=submission_proxy_url,
             )
             self._set_last_api_captcha_solution(solution)
             return solution.token
