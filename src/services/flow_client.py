@@ -628,7 +628,7 @@ class FlowClient:
                         json=json_data,
                         proxy=proxy_url,
                         timeout=request_timeout,
-                        impersonate="chrome110"
+                        impersonate="chrome136"
                     )
 
                 duration_ms = (time.time() - start_time) * 1000
