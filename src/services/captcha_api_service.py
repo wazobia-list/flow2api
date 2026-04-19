@@ -167,15 +167,21 @@ def make_sticky_proxy_url(proxy_url: str, session_id: Optional[str] = None) -> O
         username = parsed.username or ""
         password = parsed.password or ""
  
-        # Already sticky — don't double-inject
-        if "_session-" in password or "_session-" in username:
+        # Strip any pre-existing _session-..._lifetime-... fragment so we always
+        # generate a FRESH session ID.  Reusing the same session across retries
+        # means every retry goes through the identical exit IP; once Google flags
+        # that IP for a particular project the whole retry chain fails.
+        import re as _re
+        clean_password = _re.sub(r"_session-[A-Za-z0-9]+(_lifetime-[^_@]*)?", "", password)
+        clean_username  = _re.sub(r"_session-[A-Za-z0-9]+(_lifetime-[^_@]*)?", "", username)
+        if clean_password != password or clean_username != username:
             debug_logger.log_info(
-                "[StickyProxy] URL already contains _session- — reusing existing sticky session"
+                "[StickyProxy] Stripped existing _session- fragment — generating fresh session"
             )
-            return proxy_url
- 
+
         sid = session_id or secrets.token_hex(4)  # 8 hex chars, safe for IPRoyal
-        new_password = f"{password}_session-{sid}_lifetime-30m"
+        new_password = f"{clean_password}_session-{sid}_lifetime-30m"
+        username = clean_username  # use cleaned username in netloc below
  
         # Re-encode user/pass so special chars don't break the URL.
         # safe_chars covers everything IPRoyal passwords legally contain.
