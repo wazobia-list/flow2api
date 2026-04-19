@@ -258,7 +258,7 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         finally:
             config.set_yescaptcha_api_key(original_key)
 
-    async def test_session_id_is_stable_across_retries_for_video_generation(self):
+    async def test_session_id_is_refreshed_across_retries_for_video_generation(self):
         client = FlowClient(proxy_manager=None, db=self.db)
         config.set_flow_max_retries(2)
 
@@ -269,7 +269,7 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         )
         client._notify_browser_captcha_request_finished = AsyncMock()
         client._handle_retryable_generation_error = AsyncMock(return_value=True)
-        client._generate_session_id = Mock(return_value="stable-session-id")
+        client._generate_session_id = Mock(side_effect=["session-id-1", "session-id-2"])
 
         submit_payloads = []
 
@@ -293,9 +293,10 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(submit_payloads), 2)
         first_session_id = submit_payloads[0]["clientContext"]["sessionId"]
         second_session_id = submit_payloads[1]["clientContext"]["sessionId"]
-        self.assertEqual(first_session_id, "stable-session-id")
-        self.assertEqual(second_session_id, "stable-session-id")
-        client._generate_session_id.assert_called_once()
+        self.assertEqual(first_session_id, "session-id-1")
+        self.assertEqual(second_session_id, "session-id-2")
+        self.assertNotEqual(first_session_id, second_session_id)
+        self.assertEqual(client._generate_session_id.call_count, 2)
         self.assertEqual(client._get_recaptcha_token.await_count, 2)
         client._handle_retryable_generation_error.assert_awaited_once()
         client._notify_browser_captcha_request_finished.assert_has_awaits(
