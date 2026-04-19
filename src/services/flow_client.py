@@ -2342,7 +2342,14 @@ class FlowClient:
         debug_logger.log_warning(
             f"{log_prefix}遇到{retry_reason}，正在重新获取验证码重试 ({retry_attempt + 2}/{max_retries})..."
         )
-        await asyncio.sleep(1)
+        if error_class == "upstream_too_much_traffic":
+            backoff_seconds = 20.0
+        elif error_class == "upstream_public_error_unusual_activity":
+            backoff_seconds = 5.0
+        else:
+            backoff_seconds = 1.0
+
+        await asyncio.sleep(backoff_seconds)
         return True
 
     async def _handle_missing_recaptcha_token(
@@ -2398,6 +2405,8 @@ class FlowClient:
             return "provider_poll_empty_response"
         if "provider_poll_non_json_response" in value:
             return "provider_poll_non_json_response"
+        if "too_much_traffic" in value or "too much traffic" in value:
+            return "upstream_too_much_traffic"
         if "public_error_unusual_activity" in value:
             return "upstream_public_error_unusual_activity"
         if "recaptcha evaluation failed" in value:
@@ -2439,6 +2448,8 @@ class FlowClient:
     def _get_retry_reason(self, error_str: str) -> Optional[str]:
         """判断是否需要重试，返回日志提示内容"""
         error_lower = error_str.lower()
+        if "too_much_traffic" in error_lower or "too much traffic" in error_lower:
+            return "TOO_MUCH_TRAFFIC"
         if "403" in error_lower:
             return "403错误"
         if "public_error_unusual_activity" in error_lower:
