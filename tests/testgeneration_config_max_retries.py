@@ -203,6 +203,38 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
         current_after = client._get_current_api_provider("yescaptcha", "project-1", "IMAGE_GENERATION")
         self.assertEqual(current_after, "capsolver")
 
+    async def test_too_much_traffic_retry_reason_and_classification(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        error = "429 PUBLIC_ERROR_UNUSUAL_ACTIVITY_TOO_MUCH_TRAFFIC"
+        self.assertEqual(client._get_retry_reason(error), "TOO_MUCH_TRAFFIC")
+        self.assertEqual(client._classify_flow_error(error), "upstream_too_much_traffic")
+
+    async def test_retryable_error_backoff_differs_by_error_class(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        with patch("src.services.flow_client.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            should_retry = await client._handle_retryable_generation_error(
+                error=Exception("429 PUBLIC_ERROR_UNUSUAL_ACTIVITY_TOO_MUCH_TRAFFIC"),
+                retry_attempt=0,
+                max_retries=2,
+                browser_id=None,
+                project_id="project-1",
+                log_prefix="[TEST]",
+            )
+            self.assertTrue(should_retry)
+            sleep_mock.assert_awaited_once_with(20.0)
+
+        with patch("src.services.flow_client.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            should_retry = await client._handle_retryable_generation_error(
+                error=Exception("PUBLIC_ERROR_UNUSUAL_ACTIVITY"),
+                retry_attempt=0,
+                max_retries=2,
+                browser_id=None,
+                project_id="project-1",
+                log_prefix="[TEST]",
+            )
+            self.assertTrue(should_retry)
+            sleep_mock.assert_awaited_once_with(5.0)
+
     async def test_final_provider_error_is_preserved(self):
         client = FlowClient(proxy_manager=None, db=self.db)
         error = CaptchaProviderError(
