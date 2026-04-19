@@ -2350,6 +2350,14 @@ class FlowClient:
             backoff_seconds = 1.0
 
         await asyncio.sleep(backoff_seconds)
+        if (
+            error_class == "upstream_public_error_unusual_activity"
+            and self.proxy_manager
+            and hasattr(self.proxy_manager, "invalidate_current_session")
+        ):
+            maybe_coro = self.proxy_manager.invalidate_current_session()
+            if asyncio.iscoroutine(maybe_coro):
+                await maybe_coro
         return True
 
     async def _handle_missing_recaptcha_token(
