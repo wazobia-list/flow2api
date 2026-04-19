@@ -303,6 +303,30 @@ class GenerationConfigMaxRetriesTests(unittest.IsolatedAsyncioTestCase):
             [call("browser-1"), call("browser-2")]
         )
 
+    async def test_generate_image_sets_origin_and_referer_headers(self):
+        client = FlowClient(proxy_manager=None, db=self.db)
+        client._acquire_image_launch_gate = AsyncMock(return_value=(True, 0, 0))
+        client._release_image_launch_gate = AsyncMock()
+        client._get_recaptcha_token = AsyncMock(return_value=("token-1", "browser-1"))
+        client._notify_browser_captcha_request_finished = AsyncMock()
+        client._generate_session_id = Mock(return_value="session-id-1")
+        client._make_image_generation_request = AsyncMock(return_value={"operations": []})
+
+        await client.generate_image(
+            at="at-token",
+            project_id="project-123",
+            prompt="test prompt",
+            model_name="IMAGEN_3_5",
+            aspect_ratio="IMAGE_ASPECT_RATIO_LANDSCAPE",
+        )
+
+        _, kwargs = client._make_image_generation_request.await_args
+        self.assertEqual(kwargs["headers"]["Origin"], "https://labs.google")
+        self.assertEqual(
+            kwargs["headers"]["Referer"],
+            "https://labs.google/fx/tools/flow/project/project-123",
+        )
+
     def test_api_captcha_submission_fingerprint_strips_identity_headers(self):
         client = FlowClient(proxy_manager=None, db=self.db)
         client._set_last_api_captcha_solution(

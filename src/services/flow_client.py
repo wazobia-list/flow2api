@@ -410,11 +410,6 @@ class FlowClient:
             f"url={url} method={(method or 'POST').upper()}"
         )
         if config.debug_enabled:
-            logged_body = (
-                self._redact_recaptcha_token_body(json_data)
-                if self._contains_recaptcha_token_body(json_data)
-                else json_data
-            )
             debug_logger.log_request(
                 method="POST",
                 url=path,
@@ -423,7 +418,7 @@ class FlowClient:
                     "method": payload["method"],
                     "url": payload["url"],
                     "headers": submit_headers,
-                    "json": logged_body,
+                    "json": json_data,
                     "timeout": payload["timeout"],
                     "expect_json": payload["expect_json"],
                 },
@@ -596,12 +591,11 @@ class FlowClient:
                 debug_logger.log_info(
                     f"[FINGERPRINT] 使用打码浏览器指纹提交请求: UA={headers.get('User-Agent', '')[:120]}, proxy={proxy_for_log}"
                 )
-            logged_body = self._redact_recaptcha_token_body(json_data) if self._contains_recaptcha_token_body(json_data) else json_data
             debug_logger.log_request(
                 method=method,
                 url=url,
                 headers=headers,
-                body=logged_body,
+                body=json_data,
                 proxy=proxy_url
             )
 
@@ -882,6 +876,7 @@ class FlowClient:
         url: str,
         json_data: Dict[str, Any],
         at: str,
+        headers: Optional[Dict[str, str]] = None,
         attempt_trace: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """图片生成请求使用更短超时，并在网络超时时快速重试。"""
@@ -936,6 +931,7 @@ class FlowClient:
                 result = await self._make_request(
                     method="POST",
                     url=url,
+                    headers=headers,
                     json_data=json_data,
                     use_at=True,
                     at_token=at,
@@ -1437,10 +1433,15 @@ class FlowClient:
             }
 
             try:
+                request_headers = {
+                    "Origin": "https://labs.google",
+                    "Referer": f"https://labs.google/fx/tools/flow/project/{project_id}",
+                }
                 result = await self._make_image_generation_request(
                     url=url,
                     json_data=json_data,
                     at=at,
+                    headers=request_headers,
                     attempt_trace=attempt_trace,
                 )
                 attempt_trace["success"] = True
