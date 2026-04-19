@@ -106,7 +106,7 @@ class FlowClient:
         rng = random.Random(seed)
         
         # Chrome 版本池
-        chrome_versions = ["130.0.0.0", "131.0.0.0", "132.0.0.0", "129.0.0.0"]
+        chrome_versions = ["144.0.0.0", "145.0.0.0", "146.0.0.0","143.0.0.0", "142.0.0.0"]
         # Firefox 版本池
         firefox_versions = ["133.0", "132.0", "131.0", "134.0"]
         # Safari 版本池
@@ -619,7 +619,7 @@ class FlowClient:
                         headers=headers,
                         proxy=proxy_url,
                         timeout=request_timeout,
-                        impersonate="chrome110"
+                        impersonate="chrome136"
                     )
                 else:  # POST
                     response = await session.post(
