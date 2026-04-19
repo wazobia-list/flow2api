@@ -1620,9 +1620,9 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
-        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
+            session_id = self._generate_session_id()
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
             launch_gate_acquired = False
             launch_ok, _, _ = await self._acquire_video_launch_gate(
@@ -1744,9 +1744,9 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
-        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
+            session_id = self._generate_session_id()
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
             launch_gate_acquired = False
             launch_ok, _, _ = await self._acquire_video_launch_gate(
@@ -1877,9 +1877,9 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
-        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
+            session_id = self._generate_session_id()
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
             launch_gate_acquired = False
             launch_ok, _, _ = await self._acquire_video_launch_gate(
@@ -2008,9 +2008,9 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
-        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
+            session_id = self._generate_session_id()
             # 每次重试都重新获取 reCAPTCHA token - 视频使用 VIDEO_GENERATION action
             launch_gate_acquired = False
             launch_ok, _, _ = await self._acquire_video_launch_gate(
@@ -2136,9 +2136,9 @@ class FlowClient:
         # 403/reCAPTCHA 重试逻辑 - 使用配置的最大重试次数
         max_retries = config.flow_max_retries
         last_error = None
-        session_id = self._generate_session_id()
         
         for retry_attempt in range(max_retries):
+            session_id = self._generate_session_id()
             launch_gate_acquired = False
             launch_ok, _, _ = await self._acquire_video_launch_gate(
                 token_id=token_id,
